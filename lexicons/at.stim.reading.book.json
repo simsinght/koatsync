@@ -1,0 +1,71 @@
+{
+  "lexicon": 1,
+  "id": "at.stim.reading.book",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "A book in the reader's library. One record per distinct edition/file the reader has annotated or tracked.",
+      "record": {
+        "type": "object",
+        "required": ["title", "createdAt"],
+        "properties": {
+          "title": { "type": "string", "maxLength": 2000, "maxGraphemes": 500 },
+          "authors": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 1000, "maxGraphemes": 200 },
+            "maxLength": 50
+          },
+          "identifiers": { "type": "ref", "ref": "#identifiers" },
+          "language": { "type": "string", "format": "language" },
+          "format": {
+            "type": "string",
+            "description": "Container format of the file the reader has, e.g. epub, pdf, mobi, cbz.",
+            "maxLength": 20
+          },
+          "pages": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Page count as rendered on the device that created this record. Device-dependent for reflowable formats."
+          },
+          "status": {
+            "type": "string",
+            "knownValues": ["want_to_read", "reading", "finished", "abandoned"]
+          },
+          "progress": { "type": "ref", "ref": "#progress" },
+          "startedAt": { "type": "string", "format": "datetime" },
+          "finishedAt": { "type": "string", "format": "datetime" },
+          "createdAt": { "type": "string", "format": "datetime" },
+          "updatedAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    },
+    "identifiers": {
+      "type": "object",
+      "description": "Ways to correlate this record with an external catalogue or with the file on a device.",
+      "properties": {
+        "isbn13": { "type": "string", "maxLength": 13 },
+        "isbn10": { "type": "string", "maxLength": 10 },
+        "asin": { "type": "string", "maxLength": 20 },
+        "openLibrary": { "type": "string", "maxLength": 40, "description": "OpenLibrary edition key, e.g. OL7353617M." },
+        "fileHash": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "KOReader partial MD5 of the file, as used by KOReader's own progress sync. Identifies the exact bytes, which is what position locators depend on."
+        },
+        "fileName": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "progress": {
+      "type": "object",
+      "required": ["updatedAt"],
+      "properties": {
+        "percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "currentPage": { "type": "integer", "minimum": 0 },
+        "totalPages": { "type": "integer", "minimum": 1 },
+        "pageLabel": { "type": "string", "maxLength": 50, "description": "Publisher page label when the book provides a page map." },
+        "updatedAt": { "type": "string", "format": "datetime" }
+      }
+    }
+  }
+}

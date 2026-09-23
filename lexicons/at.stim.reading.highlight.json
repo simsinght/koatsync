@@ -1,0 +1,96 @@
+{
+  "lexicon": 1,
+  "id": "at.stim.reading.highlight",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "A passage the reader marked in a book, with an optional note. Carries enough locator detail to be restored into the reading app that created it.",
+      "record": {
+        "type": "object",
+        "required": ["book", "text", "createdAt"],
+        "properties": {
+          "book": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "AT-URI of the at.stim.reading.book record this highlight belongs to."
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 50000,
+            "maxGraphemes": 10000,
+            "description": "The highlighted passage, verbatim."
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 50000,
+            "maxGraphemes": 10000,
+            "description": "The reader's own note attached to the passage."
+          },
+          "chapter": { "type": "string", "maxLength": 1000, "maxGraphemes": 300 },
+          "color": {
+            "type": "string",
+            "maxLength": 20,
+            "description": "Highlight color name as the reading app knows it, e.g. yellow, green."
+          },
+          "style": {
+            "type": "string",
+            "knownValues": ["lighten", "underscore", "strikeout", "invert"],
+            "description": "How the passage is drawn. Values follow KOReader's highlight styles."
+          },
+          "locator": { "type": "ref", "ref": "#locator" },
+          "context": { "type": "ref", "ref": "#context" },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 64, "maxGraphemes": 32 },
+            "maxLength": 20
+          },
+          "generator": { "type": "ref", "ref": "#generator" },
+          "createdAt": { "type": "string", "format": "datetime" },
+          "updatedAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    },
+    "locator": {
+      "type": "object",
+      "description": "Where the passage sits in the file. Only meaningful against the same file bytes (see book identifiers.fileHash).",
+      "required": ["format", "start", "end"],
+      "properties": {
+        "format": {
+          "type": "string",
+          "knownValues": ["koreader-xpointer", "koreader-pdf"],
+          "description": "koreader-xpointer: start/end are crengine xpointers (reflowable formats). koreader-pdf: start/end are 'page:x:y' page-space coordinates (fixed-layout formats)."
+        },
+        "start": { "type": "string", "maxLength": 2000 },
+        "end": { "type": "string", "maxLength": 2000 },
+        "page": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Page number on the creating device, continuous numbering. Device-dependent for reflowable formats."
+        },
+        "pageLabel": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Publisher page label when the book provides a page map; stable across devices."
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "description": "Text immediately around the passage, for re-anchoring the highlight in a different edition (maps onto a W3C TextQuoteSelector).",
+      "properties": {
+        "prefix": { "type": "string", "maxLength": 1000, "maxGraphemes": 300 },
+        "suffix": { "type": "string", "maxLength": 1000, "maxGraphemes": 300 }
+      }
+    },
+    "generator": {
+      "type": "object",
+      "description": "The client that wrote this record.",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "version": { "type": "string", "maxLength": 50 },
+        "device": { "type": "string", "maxLength": 100, "description": "Device model, e.g. Kobo Clara 2E." }
+      }
+    }
+  }
+}
