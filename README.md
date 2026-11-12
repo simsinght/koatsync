@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://sims.computer/screenshotForKoAtKlub.png">
-    <img src="https://sims.computer/screenshotForKoAtKlub/preview.jpg" width="100%"
+    <img src="docs/header.webp" width="100%"
          alt="A Kindle running KOReader held up in a lamp-lit room, with terminals projected on the walls">
   </a>
 </p>
