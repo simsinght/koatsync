@@ -161,5 +161,62 @@ do
     check("missing file alerts", S.shown[#S.shown].text:find("No koatsync_login.txt", 1, true))
 end
 
+-- 8. a book linked to a club book: space destination, public mirror wound down, move, leave
+S.reset()
+do
+    local World = require("fakespaces")
+    local Records = require("records")
+    local world = World.new()
+    local host = world:as("did:plc:host", "host.test")
+    local space = host:ensureSpace("at.stim.reading.readAlong", "dune")
+    host:putMember(space, "did:plc:fake", true, true)
+    local ann = { hl("public before", "2026-01-01 10:00:00"), hl("also public", "2026-01-01 10:00:01") }
+    local ui = S.newReaderUI("/b/dune.epub", ann)
+    local p = signedInPlugin(ui)
+    local view = world:as("did:plc:fake", "me.example")
+    view.client = p.client
+    p.spaces = view
+    check("not linked yet", not p:isLinkedBook())
+    p:onAnnotationsModified(); S.runTasks()
+    check("unlinked book syncs publicly as before", S.countRepo("at.stim.reading.highlight") == 2)
+    local link = p:clubLink({ space = space, title = "Dune", host = "did:plc:host" })
+    check("linked", link and p:isLinkedBook() and p.store:link("md5").space == space)
+    local srepo = world.spaces[space].repos["did:plc:fake"]
+    local function spaceCount()
+        local n = 0
+        for _ in pairs(srepo and srepo.colls[Records.HIGHLIGHT] or {}) do n = n + 1 end
+        return n
+    end
+    srepo = world.spaces[space].repos["did:plc:fake"]
+    check("link pushed shared highlights to the space", spaceCount() == 2)
+    ann[#ann + 1] = hl("new after linking", "2026-01-01 10:00:02")
+    ann[#ann + 1] = hl("private one", "2026-01-01 10:00:03")
+    ann[#ann][Records.PRIVATE_FIELD] = true
+    ann[1].note = "edited"
+    p:onAnnotationsModified(); S.runTasks()
+    check("new highlight goes only to the space", spaceCount() == 3 and S.countRepo("at.stim.reading.highlight") == 2)
+    local state = Store.bookState(ui.doc_settings)
+    check("public mirror still gets edits", S.repo[state.ledger["2026-01-01 10:00:00"].uri].note == "edited")
+    ann[2][Records.PRIVATE_FIELD] = true
+    p:onAnnotationsModified(); S.runTasks()
+    check("made private: gone from space and public", spaceCount() == 2 and S.countRepo("at.stim.reading.highlight") == 1)
+    local st = p:clubStatus()
+    check("status before move", st.linked and st.needs_move and st.public_records == 1 and st.space_records == 2)
+    local moved, merr = p:clubMovePublic()
+    check("move deletes public records and book", moved and moved.deleted == 1 and S.countRepo("at.stim.reading.highlight") == 0
+        and S.countRepo("at.stim.reading.book") == 0, merr and merr.message)
+    check("status after move", not p:clubStatus().needs_move and spaceCount() == 2)
+    local privacy = require("privacy")
+    check("privacy treats a linked book as a club book", privacy.isClubBook({ ui = ui, store = p.store, plugin = p }))
+    local left, lerr = p:clubLeave()
+    check("leave deletes own space records", left and left.deleted == 2 and spaceCount() == 0, lerr and lerr.message)
+    check("left: unlinked, notes untouched, public stays off", not p:isLinkedBook() and #ann == 4 and p:clubStatus().public_off)
+    p:onAnnotationsModified(); S.runTasks()
+    check("after leaving nothing goes public until asked", S.countRepo("at.stim.reading.highlight") == 0)
+    p:clubSetPublicMirror(true)
+    p:onAnnotationsModified(); S.runTasks()
+    check("public mirror back on: shared ones sent", S.countRepo("at.stim.reading.highlight") == 2)
+end
+
 print(string.format("%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

@@ -31,10 +31,15 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Client = require("atproto")
+local Club = require("club")
+local ClubMenu = require("clubmenu")
+local ClubSource = require("clubsource")
+local Clubs = require("clubs")
 local ExportTarget = require("exporter")
 local OthersReader = require("othersreader")
 local Privacy = require("privacy")
 local Records = require("records")
+local Spaces = require("spaces")
 local Store = require("store")
 local Sync = require("sync")
 
@@ -67,6 +72,7 @@ function Koatsync:init()
     }
     self.settle_task = function() self:onSettle() end
     self.connect_task = function() self:flushDirty(false) end
+    self.offer_task = function() self:offerReadAlong() end
 
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
@@ -81,6 +87,7 @@ end
 function Koatsync:onCloseWidget()
     UIManager:unschedule(self.settle_task)
     UIManager:unschedule(self.connect_task)
+    UIManager:unschedule(self.offer_task)
     ExportTarget:detach(self)
     local unregister = rawget(_G, "__ZENOS_UNREGISTER_STATUS_ITEM")
     if type(unregister) == "function" then unregister("koatsync.pending") end
@@ -277,6 +284,7 @@ function Koatsync:addToMainMenu(menu_items)
                 separator = true,
             },
             OthersReader.menu(self, self.others_reader),
+            ClubMenu.menu(self),
             Privacy.menu(self),
             {
                 text = _("Status"),
@@ -449,8 +457,8 @@ function Koatsync:syncOpenBook()
     local book = self:openBook()
     local ds = self.ui.doc_settings
     local state = Store.bookState(ds)
-    local counts = Sync.pushBook(self.ctx, book, state, function(s) Store.saveBookState(ds, s, false) end)
-    self:afterSync(book.file, counts)
+    local counts = self:pushBookState(book, state, function(s) Store.saveBookState(ds, s, false) end)
+    self:afterSync(book.file, counts, true)
     return counts
 end
 
@@ -464,12 +472,38 @@ function Koatsync:syncFile(file)
         return { created = 0, updated = 0, deleted = 0, skipped = true }
     end
     local state = Store.bookState(ds)
-    local counts = Sync.pushBook(self.ctx, book, state, function(s) Store.saveBookState(ds, s, true) end)
+    local counts = self:pushBookState(book, state, function(s) Store.saveBookState(ds, s, true) end)
     self:afterSync(file, counts)
     return counts
 end
 
-function Koatsync:afterSync(file, counts)
+--[[--
+Sends one book wherever it goes. A book linked to a club book goes to the
+reader's repo in that book space; if it was mirrored publicly before, the
+public copy is kept current for edits, deletions and newly private highlights
+but gets nothing new, until the reader moves it (clubMovePublic). Any other
+book syncs to the public repo exactly as before, unless its public mirror was
+switched off (`state.public_off`, set when a book is moved or linked).
+]]
+function Koatsync:pushBookState(book, state, save)
+    local link = self.store:link(book.md5)
+    if not link then
+        if state.public_off then return { created = 0, updated = 0, deleted = 0 } end
+        return Sync.pushBook(self.ctx, book, state, save)
+    end
+    local dest = { kind = "space", space = link.space, spaces = self:spacesClient() }
+    local counts = Sync.pushTo(self.ctx, book, state, save, dest)
+    if counts.err then return counts end
+    if Sync.heldCount(state) > 0 then
+        local pc = Sync.pushBook(self.ctx, book, state, save, { no_creates = true })
+        counts.updated = counts.updated + pc.updated
+        counts.deleted = counts.deleted + pc.deleted
+        counts.err = pc.err
+    end
+    return counts
+end
+
+function Koatsync:afterSync(file, counts, is_open)
     if counts.err then
         logger.warn("koatsync: sync failed for", file, counts.err.status, counts.err.error, counts.err.message)
         self.store:markDirty(file)
@@ -477,6 +511,10 @@ function Koatsync:afterSync(file, counts)
         self.store:clearDirty(file)
         self.store:set("last_sync", os.time())
         self.store:flush()
+        -- Others may have written meanwhile: refresh the overlay of a linked open book.
+        if is_open and self.others_reader and self:isLinkedBook() and NetworkMgr:isWifiOn() then
+            self.others_reader:scheduleRefresh(1)
+        end
     end
     self:refreshZenOSStatus()
 end
@@ -532,6 +570,301 @@ function Koatsync:report(counts, interactive)
     if counts.updated > 0 then parts[#parts + 1] = T(_("%1 updated"), counts.updated) end
     if counts.deleted > 0 then parts[#parts + 1] = T(_("%1 removed"), counts.deleted) end
     self:notify("koatsync: " .. table.concat(parts, ", "))
+end
+
+-- Book clubs -------------------------------------------------------------------
+--[[--
+The plugin-facing club API. Club-wide operations live on `self:clubService()`
+(clubs.lua: create, join, addMember, removeMember, roster, books, host,
+addReader, removeReader, readers, joinBook, allBooks, deleteClub, deleteBook,
+forget). The methods here act on a local file (the open book when `file` is
+nil) because they need its sidecar. All return a result, or nil and an error
+`{ code, message }` whose message can be shown as is (codes: Club.ERR). They
+block on the network where noted; callers make sure Wi-Fi is up
+(NetworkMgr:runWhenOnline for user actions; never turn it on otherwise).
+]]
+
+function Koatsync:spacesClient()
+    if not self.spaces or self.spaces.client ~= self.client then
+        self.spaces = Spaces.new(self.client)
+        self.clubs = nil
+        self.club_source = nil
+    end
+    return self.spaces
+end
+
+--- The clubs.lua service for the signed-in account.
+function Koatsync:clubService()
+    local spaces = self:spacesClient()
+    if not self.clubs then
+        self.clubs = Clubs.new{ client = self.client, spaces = spaces, store = self.store }
+    end
+    return self.clubs
+end
+
+local function cacheDir()
+    local dir = DataStorage:getDataDir() .. "/cache/koatsync"
+    util.makePath(dir)
+    return dir
+end
+
+--- The network source of others' highlights (clubsource.lua), with its on-disk cache.
+function Koatsync:clubSource()
+    local spaces = self:spacesClient()
+    if not self.club_source then
+        self.club_source = ClubSource.new{
+            spaces = spaces,
+            own_did = function() return self.client.did end,
+            cache = function(space)
+                return LuaSettings:open(cacheDir() .. "/space-" .. space:gsub("^ats?://", ""):gsub("[^%w%-]+", "_") .. ".lua")
+            end,
+            person = function(did, offline) return self:clubService():person(did, offline) end,
+        }
+    end
+    return self.club_source
+end
+
+--- The open book's partial MD5, or nil.
+function Koatsync:openMd5()
+    return self.ui and self.ui.doc_settings and self.ui.doc_settings:readSetting("partial_md5_checksum") or nil
+end
+
+--- The club link of the open book (or of `md5`): { space, title, club, host, file, linkedAt } or nil.
+function Koatsync:linkFor(md5)
+    return self.store:link(md5 or self:openMd5())
+end
+
+--- Whether the open book reads along with a club book.
+function Koatsync:isLinkedBook()
+    return self.ui ~= nil and self.ui.document ~= nil and self:linkFor() ~= nil
+end
+
+-- book, doc_settings, state, save for a file (the open book when file is nil or open)
+function Koatsync:bookContext(file)
+    if not file or (self.ui.document and self.ui.document.file == file) then
+        if not self.ui.document then return nil end
+        local ds = self.ui.doc_settings
+        return self:openBook(), ds, Store.bookState(ds), function(s) Store.saveBookState(ds, s, false) end
+    end
+    local book, ds = self:closedBook(file)
+    if not book then return nil end
+    return book, ds, Store.bookState(ds), function(s) Store.saveBookState(ds, s, true) end
+end
+
+local function noBook() return nil, Club.err(Club.ERR.BAD_INPUT, _("Open a book first.")) end
+
+--- What the club code knows about a book: { title, authors, identifiers } (Club.localMeta).
+function Koatsync:bookMeta(file)
+    local book = self:bookContext(file)
+    if not book then return noBook() end
+    return Club.localMeta(book.props, book.file, Records.findISBN)
+end
+
+--[[--
+Where a book stands, for a status line or a dialog. No network.
+
+@treturn table { linked, link, club_name, space_records, public_records,
+  public_book (a public book record exists), public_off, needs_move (linked and
+  still mirrored publicly), others_refreshed_at }
+]]
+function Koatsync:clubStatus(file)
+    local book, _ds, state = self:bookContext(file)
+    if not book then return noBook() end
+    local link = self.store:link(book.md5)
+    local public_n, public_book = Sync.heldCount(state)
+    local st = { linked = link ~= nil, link = link, public_records = public_n, public_book = public_book,
+        public_off = state.public_off == true, space_records = 0 }
+    if link then
+        st.club_name = self:clubService():clubName(link)
+        st.space_records = Sync.heldCount(state, { kind = "space", space = link.space })
+        st.needs_move = public_n > 0 or public_book
+        st.others_refreshed_at = self:clubSource():refreshedAt(link.space)
+    end
+    return st
+end
+
+--- Club books the open book (or `file`) could be, from cached lists; no network. { {book, how} }
+function Koatsync:clubOffers(file)
+    local book = self:bookContext(file)
+    if not book then return noBook() end
+    if self.store:link(book.md5) then return {} end
+    return self:clubService():matchesFor(Club.localMeta(book.props, book.file, Records.findISBN), book.md5)
+end
+
+--- "Not this book": stops offering `desc` for this file.
+function Koatsync:clubDecline(desc, file)
+    local book = self:bookContext(file)
+    if not book then return noBook() end
+    return self:clubService():decline(book.md5, desc.space)
+end
+
+--[[--
+Links a file to a club book (a descriptor from clubOffers, allBooks, books,
+host or joinBook) and, with Wi-Fi up, sends its shared highlights there.
+The public mirror stops getting new highlights; whatever it already holds stays
+until clubMovePublic. Network (the first push) only when `opts.sync` is not false.
+
+@treturn table link
+@treturn table counts of the first push ({ created, updated, deleted, err }) when sent
+]]
+function Koatsync:clubLink(desc, file, opts)
+    local book, ds, state, save = self:bookContext(file)
+    if not book then return noBook() end
+    local link, err = self:clubService():link(book.md5, book.file, desc)
+    if not link then return nil, err end
+    state.public_off = true
+    save(state)
+    if ds.flush and file then ds:flush() end
+    self.store:markDirty(book.file)
+    local counts
+    if not (opts and opts.sync == false) and self:isSignedIn() and NetworkMgr:isWifiOn() then
+        counts = self:syncFile(book.file)
+        if counts.err then counts.err = Clubs.explain(counts.err) end
+    end
+    return link, counts
+end
+
+--[[--
+Hosts the open book (or `file`) for a club and links it. Network.
+
+@param club_uri club space uri
+@param opts { name?, exclude = {did...}, guests = {handle...}, reuse? } (see Clubs:host)
+@treturn table { space, book, added, failed, link, counts }
+]]
+function Koatsync:clubHost(club_uri, opts, file)
+    local book = self:bookContext(file)
+    if not book then return noBook() end
+    local meta = Club.localMeta(book.props, book.file, Records.findISBN)
+    local res, err = self:clubService():host(club_uri, meta, opts)
+    if not res then return nil, err end
+    res.link, res.counts = self:clubLink(res.book, file)
+    return res
+end
+
+--- Joins a book as a guest (host's handle + book name) and links the open book (or `file`) to it. Network.
+function Koatsync:clubJoinAsGuest(host, name, file)
+    local book = self:bookContext(file)
+    if not book then return noBook() end
+    local desc, err = self:clubService():joinBook(host, name)
+    if not desc then return nil, err end
+    local link, counts = self:clubLink(desc, file)
+    return { book = desc, link = link, counts = counts }
+end
+
+--[[--
+Finishes moving a linked book out of the public repo: once the book space holds
+every shared highlight (a push with nothing left to send), deletes this book's
+public highlight records and its public book record. Meant to be confirmed by
+the reader first. Network.
+
+@treturn table { deleted } (public records removed)
+]]
+function Koatsync:clubMovePublic(file)
+    local book, _ds, state, save = self:bookContext(file)
+    if not book then return noBook() end
+    local link = self.store:link(book.md5)
+    if not link then return nil, Club.err(Club.ERR.NOT_LINKED, _("This book is not reading along with a club.")) end
+    local dest = { kind = "space", space = link.space, spaces = self:spacesClient() }
+    local counts = Sync.pushTo(self.ctx, book, state, save, dest)
+    if counts.err then return nil, Clubs.explain(counts.err) end
+    -- Everything shared is in the space now; only then remove the public copies.
+    local res = Sync.removeAll(self.ctx, state, save, { kind = "public" })
+    if res.err then return nil, Clubs.explain(res.err) end
+    state.public_off = true
+    save(state)
+    if file then self:flushSidecar(file) end
+    return { deleted = res.deleted, sent = counts.created + counts.updated }
+end
+
+function Koatsync:flushSidecar(file)
+    if self.ui.document and self.ui.document.file == file then return end
+    local _b, ds = self:closedBook(file)
+    if ds then ds:flush() end
+end
+
+--[[--
+Leaves a read-along: deletes this reader's records (highlights and book
+record) from the book space and unlinks the file. Local annotations are not
+touched, and the public mirror stays off (clubSetPublicMirror turns it back
+on). Network.
+
+@treturn table { deleted }
+]]
+function Koatsync:clubLeave(file)
+    local book, _ds, state, save = self:bookContext(file)
+    if not book then return noBook() end
+    local link = self.store:link(book.md5)
+    if not link then return nil, Club.err(Club.ERR.NOT_LINKED, _("This book is not reading along with a club.")) end
+    local res = Sync.removeAll(self.ctx, state, save, { kind = "space", space = link.space, spaces = self:spacesClient() })
+    if res.err then return nil, Clubs.explain(res.err) end
+    self:clubService():unlink(book.md5)
+    state.public_off = true
+    save(state)
+    if file then self:flushSidecar(file) end
+    if self.others_reader and not file then self.others_reader:load() end
+    return { deleted = res.deleted }
+end
+
+--- Whether an unlinked book syncs to the public repo again (`on`) or not. No network.
+function Koatsync:clubSetPublicMirror(on, file)
+    local book, _ds, state, save = self:bookContext(file)
+    if not book then return noBook() end
+    state.public_off = (not on) or nil
+    save(state)
+    if on then self.store:markDirty(book.file) end
+    if file then self:flushSidecar(file) end
+    return true
+end
+
+--[[--
+Re-reads others' highlights for the open linked book from its space and redraws
+the overlay. Network.
+
+@treturn table stats from ClubSource:refresh ({ writers, verified, kept, dropped, rejected, requests, seconds, ... })
+]]
+function Koatsync:clubRefreshOthers()
+    local link = self:linkFor()
+    if not link then return nil, Club.err(Club.ERR.NOT_LINKED, _("This book is not reading along with a club.")) end
+    if not self:isSignedIn() then return nil, Club.err(Club.ERR.NOT_SIGNED_IN, _("Sign in to your PDS first, under Tools → koatsync.")) end
+    local stats, err = self:clubSource():refresh(link.space)
+    if stats then
+        logger.info(string.format("koatsync: refreshed %s: %d writers (%d changed), %d verified, %d kept, %d dropped, %d rejected, %d requests, %.2fs",
+            link.space, stats.writers, stats.changed_writers, stats.verified, stats.kept, stats.dropped, stats.rejected, stats.requests, stats.seconds))
+    end
+    if self.others_reader then self.others_reader:load() end
+    if not stats then return nil, Clubs.explain(err, _("This book")) end
+    return stats
+end
+
+--- On opening a book: refresh stale club lists if Wi-Fi is up, then offer a matching club book.
+function Koatsync:onReaderReady()
+    if not self:isSignedIn() or not self.ui.document then return end
+    UIManager:unschedule(self.offer_task)
+    UIManager:scheduleIn(1.5, self.offer_task)
+end
+
+function Koatsync:offerReadAlong()
+    if not self.ui.document or not self:isSignedIn() or self:isLinkedBook() then return end
+    local service = self:clubService()
+    if NetworkMgr:isWifiOn() then
+        for _, c in ipairs(service:list()) do pcall(service.books, service, c.uri) end -- TTL-gated
+    end
+    local offers = self:clubOffers()
+    if type(offers) ~= "table" or #offers == 0 then return end
+    local desc = offers[1].book
+    local club = desc.club and self.store:club(desc.club)
+    local who = club and club.name or desc.club_name or _("a club")
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Read along with %1?\n\n“%2” is on %1's list. Your shared highlights and notes for this book will go to the club instead of your public repo; private ones stay on this device."), who, desc.title),
+        ok_text = _("Read along"),
+        cancel_text = _("Not this book"),
+        ok_callback = function()
+            local _link, counts = self:clubLink(desc)
+            if counts then self:report(counts, true) end
+            if self.others_reader then self.others_reader:scheduleRefresh(0.5) end
+        end,
+        cancel_callback = function() self:clubDecline(desc) end,
+    })
 end
 
 -- ZenOS ------------------------------------------------------------------------

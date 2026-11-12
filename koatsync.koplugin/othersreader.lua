@@ -7,6 +7,11 @@ PageUpdate, CloseDocument, the dispatcher's KoatsyncToggleOthers) directly.
 They never enter this reader's annotations, so they are never synced back
 out as theirs. Placement (anchor.lua) is cached per local file.
 
+Where they come from: for a book linked to a club book, the book space
+(clubsource.lua), read from its on-disk cache at once and refreshed over the
+network when the book opens with Wi-Fi already on, after a sync, and from the
+menu. Any other book falls back to the dev fixture (fixturesource.lua).
+
 @module koplugin.koatsync.othersreader
 ]]
 
@@ -39,9 +44,26 @@ function OthersReader.attach(plugin)
     return self
 end
 
+--- The source for the open book, and the book space it reads (nil for the fixture).
 function OthersReader:source()
+    local link = self.plugin.linkFor and self.plugin:linkFor()
+    if link and link.space then return self.plugin:clubSource(), link.space end
     local rapidjson = require("rapidjson")
     return FixtureSource.new{ dir = DataStorage:getDataDir() .. "/koatsync/others", decode = rapidjson.decode }
+end
+
+--- Refreshes from the network in `secs` (only for a linked book with Wi-Fi already on).
+function OthersReader:scheduleRefresh(secs)
+    if self.refresh_task then UIManager:unschedule(self.refresh_task) end
+    self.refresh_task = function()
+        self.refresh_task = nil
+        if not self.ui.document then return end
+        local NetworkMgr = require("ui/network/manager")
+        if not (self.plugin:isLinkedBook() and self.plugin:isSignedIn() and NetworkMgr:isWifiOn()) then return end
+        local _stats, err = self.plugin:clubRefreshOthers()
+        if err then logger.warn("koatsync: others' highlights refresh:", err.code, err.message) end
+    end
+    UIManager:scheduleIn(secs or 0, self.refresh_task)
 end
 
 function OthersReader:onReaderReady()
@@ -58,10 +80,13 @@ function OthersReader:onReaderReady()
     -- Let the first page paint before searching.
     self.load_task = function() self:load() end
     UIManager:scheduleIn(0.5, self.load_task)
+    -- Then fetch what changed, if this book reads along and Wi-Fi is already up.
+    self:scheduleRefresh(3)
 end
 
 function OthersReader:onCloseDocument()
     if self.load_task then UIManager:unschedule(self.load_task) end
+    if self.refresh_task then UIManager:unschedule(self.refresh_task) end
 end
 
 function OthersReader:load(recompute)
@@ -69,7 +94,8 @@ function OthersReader:load(recompute)
     local time = require("ui/time")
     local doc = self.ui.document
     local md5 = self.ui.doc_settings:readSetting("partial_md5_checksum")
-    local entries, err = self:source():fetch{ file = doc.file, md5 = md5,
+    local source, space = self:source()
+    local entries, err = source:fetch{ file = doc.file, md5 = md5, space = space,
         title = self.ui.doc_props and self.ui.doc_props.title }
     if not entries then
         logger.warn("koatsync: others' highlights:", err)
@@ -194,6 +220,21 @@ function OthersReader.menu(plugin, reader)
                 enabled_func = function() return reader ~= nil and reader.others ~= nil and #reader.others.unplaced > 0 end,
                 keep_menu_open = true,
                 callback = function() reader:showUnplaced() end,
+            },
+            {
+                text = _("Refresh from the club"),
+                help_text = _("Fetches other readers' highlights for this book from its club space. Asks for Wi-Fi if it is off."),
+                enabled_func = function() return reader ~= nil and plugin:isLinkedBook() end,
+                callback = function()
+                    require("ui/network/manager"):runWhenOnline(function()
+                        local done = plugin:busy(_("Fetching others' highlights…"))
+                        local stats, err = plugin:clubRefreshOthers()
+                        done()
+                        if not stats then return plugin:alert(err.message) end
+                        plugin:notify(T(_("koatsync: %1 reader(s), %2 new or changed, %3 requests"),
+                            stats.writers, stats.verified, stats.requests))
+                    end)
+                end,
             },
             {
                 text = _("Find them again in this book"),

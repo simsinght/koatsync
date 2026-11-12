@@ -84,6 +84,92 @@ function Store:dirtyFiles()
     return out
 end
 
+-- Clubs and read-alongs ----------------------------------------------------------
+--[[--
+Plugin-wide club state (in koatsync.lua next to the account):
+
+* `clubs`: club space uri -> { uri, name, slug, owner, owner_handle, role =
+  "owner"|"member", joinedAt, books = { descriptor... }, books_at }
+* `guest_books`: book space uri -> descriptor (books joined by name, without a club)
+* `links`: partial md5 of a local file -> { space, title, club, host, file, linkedAt }
+* `declined`: partial md5 -> { [book space uri] = os.time() } ("read along?" said no)
+* `people`: did -> { handle, displayName, at } (display names of other readers)
+
+A descriptor is Club.descriptor's table. Links are keyed by the file's partial
+MD5, which KOReader also keeps in the sidecar, so a moved file stays linked.
+]]
+
+local function mapGet(self, key) return self:get(key) or {} end
+
+function Store:clubs() return mapGet(self, "clubs") end
+
+function Store:club(uri) return mapGet(self, "clubs")[uri] end
+
+function Store:setClub(club)
+    local all = mapGet(self, "clubs")
+    all[club.uri] = club
+    self:set("clubs", all)
+    self:flush()
+end
+
+function Store:removeClub(uri)
+    local all = mapGet(self, "clubs")
+    all[uri] = nil
+    self:set("clubs", all)
+    self:flush()
+end
+
+function Store:guestBooks() return mapGet(self, "guest_books") end
+
+function Store:setGuestBook(desc)
+    local all = mapGet(self, "guest_books")
+    all[desc.space] = desc
+    self:set("guest_books", all)
+    self:flush()
+end
+
+function Store:removeGuestBook(space)
+    local all = mapGet(self, "guest_books")
+    all[space] = nil
+    self:set("guest_books", all)
+    self:flush()
+end
+
+function Store:link(md5)
+    if not md5 then return nil end
+    return mapGet(self, "links")[md5]
+end
+
+function Store:links() return mapGet(self, "links") end
+
+function Store:setLink(md5, link)
+    local all = mapGet(self, "links")
+    all[md5] = link
+    self:set("links", all)
+    self:flush()
+end
+
+function Store:declined(md5)
+    return md5 and mapGet(self, "declined")[md5] or nil
+end
+
+function Store:setDeclined(md5, space, on)
+    local all = mapGet(self, "declined")
+    local set = all[md5] or {}
+    set[space] = on and os.time() or nil
+    all[md5] = next(set) and set or nil
+    self:set("declined", all)
+    self:flush()
+end
+
+function Store:person(did) return mapGet(self, "people")[did] end
+
+function Store:setPerson(did, p)
+    local all = mapGet(self, "people")
+    all[did] = p
+    self:set("people", all)
+end
+
 -- Per-book state ---------------------------------------------------------------
 
 --- The plugin's table inside a book's sidecar; created empty if absent.

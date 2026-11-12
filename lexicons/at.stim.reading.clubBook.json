@@ -1,0 +1,46 @@
+{
+  "lexicon": 1,
+  "id": "at.stim.reading.clubBook",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "description": "A book a reading club reads, pointing at the permissioned space (type at.stim.reading.readAlong) where its readers share highlights. Written by the book's host in two places: in the club's space (type at.stim.reading.club), rkey = the book space's key, so members can discover it; and in the book space itself, rkey 'self', so a guest who joins the book by name learns what it is.",
+      "record": {
+        "type": "object",
+        "required": ["title", "space", "createdAt"],
+        "properties": {
+          "title": { "type": "string", "maxLength": 2000, "maxGraphemes": 500 },
+          "authors": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 1000, "maxGraphemes": 200 },
+            "maxLength": 50
+          },
+          "identifiers": {
+            "type": "ref",
+            "ref": "#identifiers",
+            "description": "Catalogue identifiers of the edition the host has. Readers match their own copies by ISBN when both have one, otherwise by normalised title and author surnames, so other editions read along too."
+          },
+          "space": {
+            "type": "string",
+            "description": "URI of the book's space: at://<host DID>/space/at.stim.reading.readAlong/<key>."
+          },
+          "club": {
+            "type": "string",
+            "description": "URI of the club's space (at://<owner DID>/space/at.stim.reading.club/<key>), when the book is read for a club."
+          },
+          "createdAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    },
+    "identifiers": {
+      "type": "object",
+      "properties": {
+        "isbn13": { "type": "string", "maxLength": 13 },
+        "isbn10": { "type": "string", "maxLength": 10 },
+        "asin": { "type": "string", "maxLength": 20 },
+        "openLibrary": { "type": "string", "maxLength": 40 }
+      }
+    }
+  }
+}

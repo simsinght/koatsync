@@ -1,0 +1,20 @@
+{
+  "lexicon": 1,
+  "id": "at.stim.reading.clubProfile",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "literal:self",
+      "description": "A reading club's display name and description, in the owner's repo inside the club's space (type at.stim.reading.club). The space key is a slug of the name, so this keeps the name as typed.",
+      "record": {
+        "type": "object",
+        "required": ["name", "createdAt"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 640, "maxGraphemes": 64 },
+          "description": { "type": "string", "maxLength": 3000, "maxGraphemes": 300 },
+          "createdAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    }
+  }
+}

@@ -37,14 +37,17 @@ So koatsync does two things:
 
 ### Where it's at
 
-Early, and moving fast.
+Early, and moving fast. For now everyone in a club needs an account on a PDS that runs the
+atproto spaces alpha.
 
 | | |
 | --- | --- |
 | Mirroring your highlights to a PDS | works, in daily use |
-| Others' highlights on the page, re-anchored across editions | works, fed by a local file for now |
-| "Save private" in the note editor | works, behind a dev switch |
-| Clubs: one permissioned space per book, invites, read-along | protocol client done, being wired in |
+| Clubs: create, add members, join by owner handle + club name | works, menus are still plain |
+| Read-alongs: one permissioned space per book, offered when you open a matching book | works |
+| Others' highlights on the page, re-anchored across editions, cached for offline | works |
+| "Save private" in the note editor of a club book | works |
+| Hide a person, spoiler-safe lists, friendlier club screens | next |
 
 Looks best with [ZenOS](https://github.com/xZenLabs/zen-os). Works without it.
 
@@ -146,9 +149,39 @@ to read all of it). Your own highlights, links and page-turn taps behave as befo
 - **Tools → koatsync → Others' highlights** has the show/hide toggle, the count of placed and
   not-found passages (tap it to list the ones not found), and a re-search. The toggle is also a
   dispatcher action, `koatsync: show/hide others' highlights`.
-- For now the highlights come from a JSON file in `<KOReader folder>/koatsync/others/`, named
-  `<partial md5>.json` or after the title (`pride-and-prejudice.json`): a list of
+- In a book that reads along with a club (below) they come from the book's space, cached on the
+  device so the overlay works offline with the last fetched state. They are refreshed when the book
+  opens with Wi-Fi already on, after each sync, and from **Others' highlights → Refresh from the club**.
+- Any other book falls back to a dev fixture: a JSON file in `<KOReader folder>/koatsync/others/`,
+  named `<partial md5>.json` or after the title (`pride-and-prejudice.json`): a list of
   `{author: {did, handle, displayName}, uri, cid, bookFileHash, record}`.
+
+## Book clubs
+
+A club is an atproto permissioned space; each book the club reads gets a space of its own, so who
+reads which book can differ. **Tools → koatsync → Book club** has (plain, unpolished) entries for all
+of it:
+
+- **Create a club…** (you own it), then in the club's submenu **Add a member…** by handle. On a shared
+  PDS a bare name is enough (`alice` becomes `alice.<your domain>`).
+- **Join a club…** asks for the owner's handle and the club's name, once. It works after the owner
+  has added you; until then the server cannot tell "no such club" from "not added yet".
+- **Host this book for the club…** (any member can): creates the book's space under your account,
+  adds the club's members (minus anyone you leave out, plus guests who are not in the club) and
+  announces the book to the club.
+- When you open a book that matches a club book (same ISBN, or the same title and author surname,
+  so other editions count), koatsync asks "Read along with <club>?". "Not this book" is remembered
+  for that file. **Link this book to a club book** does the same by hand; **Join a book as a guest…**
+  takes the host's handle and the book's name.
+- In a linked book your shared highlights and notes go to your own repo inside the book's space, not
+  your public repo. "Save private" ones never leave the device. If the book was mirrored publicly
+  before, **Move public highlights into the club…** deletes the public copies once the club has
+  them; until then the public copy gets edits and deletions but nothing new.
+- **Leave this read-along…** deletes your records from the book's space; your own highlights and
+  notes in KOReader are untouched, and the book does not go back to your public repo unless you ask.
+
+Others' highlights are read with a space credential and shown only once verified with a record MAC
+(`clubsource.lua` explains the scheme and its cost).
 
 ## Data model
 
@@ -163,6 +196,21 @@ Lexicons are in `lexicons/`. In short:
 Position locators only make sense against the same file bytes, which is why the book record carries
 KOReader's partial MD5 of the file.
 
+Clubs (see `club.lua` for the full picture):
+
+- Space types: `at.stim.reading.club` for a club (key: slug of the club name, owned by its creator,
+  publishes its member list to members) and `at.stim.reading.readAlong` for one book a club reads
+  (key: slug of the book's name, owned by its host).
+- `at.stim.reading.clubProfile` (rkey `self`, owner's repo in the club space): the club's name.
+- `at.stim.reading.clubBook`: title, authors, identifiers, the book space's URI and the club's. The
+  host writes it into the club space (rkey = the book space's key) and into the book space (rkey `self`).
+- Inside a book space every reader writes the same `at.stim.reading.book` and
+  `at.stim.reading.highlight` records as in a public repo, into their own repo there.
+- On the device: clubs, known books, links (keyed by the file's partial MD5), declined offers and
+  display names in `settings/koatsync.lua`; per book, the public ledger stays at the top of the
+  sidecar's `koatsync` table and each book space gets its own ledger under `spaces[<space uri>]`;
+  others' records per book space in `cache/koatsync/space-*.lua`.
+
 ## Development
 
 Off-device tests run on LuaJIT with the same libraries KOReader bundles:
@@ -176,8 +224,9 @@ luarocks --lua-version 5.1 --lua-dir "$LJ" --tree ./.luarocks install rapidjson
 koatsync.koplugin/spec/run.sh              # unit + stubbed plugin scenarios
 koatsync.koplugin/spec/run.sh integration  # live round trip against the PDS in .env
 koatsync.koplugin/spec/run.sh spaces       # live permissioned-spaces round trip (two accounts)
-KOREADER=/Applications/KOReader.app/Contents/koreader koatsync.koplugin/spec/run.sh [spaces]
-                                           # crypto spec (or spaces run) on KOReader's own luajit and libcrypto
+koatsync.koplugin/spec/run.sh club         # live book-club story (three accounts)
+KOREADER=/Applications/KOReader.app/Contents/koreader koatsync.koplugin/spec/run.sh [spaces|club]
+                                           # crypto spec (or a live run) on KOReader's own luajit and libcrypto
 ```
 
 The integration run needs a `.env` with `ATP_PDS`, `ATP_HANDLE`, `ATP_DID` and `ATP_PASSWORD`.
@@ -186,6 +235,11 @@ The spaces run also needs `ATP_MEMBER_HANDLE`, `ATP_MEMBER_DID` and `ATP_MEMBER_
 it keeps the `at.stim.reading.club` / `koatsync-spec` space between runs and deletes its records.
 With `ATP_OUTSIDER_HANDLE` and `ATP_OUTSIDER_PASSWORD` naming a third account (never added to the space)
 it also checks that a non-member is refused.
+The club run needs all three accounts. It creates the `koatsync spec club` club and the
+`koatsync-spec-pride-and-prejudice` book space under the first account, plays the whole story
+(join, host, discover, link, highlights both ways with verification, private notes, public-to-club
+move, guest, leave, removal, outsiders refused), deletes every record and then both spaces. It
+never writes to the first account's public repo.
 `spacecrypto.lua` loads libcrypto through FFI; set `KOATSYNC_LIBCRYPTO` to a path to override the search.
 
 `dev/koreader.sh <profile> [book]` runs the macOS KOReader build on a throwaway profile; with
@@ -206,7 +260,11 @@ Module map:
 - `exporter.lua`: target for KOReader's Export Highlights.
 - `anchor.lua`: finds a quoted passage in a (possibly different) edition; pure, with a crengine adapter.
 - `others.lua`: places other readers' highlights for a book, with a per-file cache.
-- `fixturesource.lua`: where others' highlights come from for now (a JSON file per book).
+- `club.lua`: clubs, the pure part (slugs, book matching, record builders, rosters, listing diffs).
+- `clubs.lua`: clubs over spaces (create/join, members, host/join books, links to local files).
+- `clubsource.lua`: others' highlights from a book space, verified and cached on disk.
+- `clubmenu.lua`: the bare Book club menu.
+- `fixturesource.lua`: others' highlights from a JSON file per book (dev fallback).
 - `overlay.lua`: draws others' highlights as a reader view module.
 - `othersreader.lua`: others' highlights in the reader (loading, taps, menu).
 - `otherspopup.lua`, `popuplayout.lua`: the tap popup, and its pure row/placement logic.

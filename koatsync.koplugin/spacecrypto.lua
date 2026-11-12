@@ -710,7 +710,7 @@ end
 
 --[[--
 Reader side of the KEM: a fresh ephemeral key against the author's `#atproto_kem`
-key. Use once per request.
+key. Each call makes a new share; spaces.lua reuses one per author for a while.
 
 @param author_kem multikey or did:key of the author's #atproto_kem key
 @treturn table|nil { keyShare = did:key string, sharedSecret = 32 bytes }

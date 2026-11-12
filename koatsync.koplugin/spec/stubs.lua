@@ -49,7 +49,7 @@ preload("ffi/util", { template = function(s, ...)
     local args = { ... }
     return (s:gsub("%%(%d)", function(n) return tostring(args[tonumber(n)]) end))
 end })
-preload("util", { trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end })
+preload("util", { trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end, makePath = function() return true end })
 preload("ui/network/manager", {
     isWifiOn = function() return S.wifi_on end,
     runWhenOnline = function(_, fn) fn() end,

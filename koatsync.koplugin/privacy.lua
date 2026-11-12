@@ -199,9 +199,16 @@ function Privacy.attach(plugin)
     return self
 end
 
---- Prototype: a dev setting stands in for "this book belongs to a club".
+--[[--
+Whether the open file reads along with a club book (it is linked to a book
+space; see clubs.lua). The `dev_club_books` setting still forces it on, for
+testing the buttons without a club.
+]]
 function Privacy:isClubBook()
-    return self.ui.document ~= nil and self.store:get("dev_club_books") == true
+    if self.ui.document == nil then return false end
+    if self.store:get("dev_club_books") == true then return true end
+    local plugin = self.plugin
+    return type(plugin) == "table" and type(plugin.isLinkedBook) == "function" and plugin:isLinkedBook() == true
 end
 
 function Privacy:state()
@@ -304,8 +311,8 @@ end
 --- Dev menu entry (prototype).
 function Privacy.menu(plugin)
     return {
-        text = _("Treat books as club books (dev)"),
-        help_text = _("Prototype: offers \"Save private\" in the note editor and private/shared items in the highlight menu, as if every book belonged to a club."),
+        text = _("Treat every book as a club book (dev)"),
+        help_text = _("For testing: offers \"Save private\" in the note editor and private/shared items in the highlight menu in every book, not only in books linked to a club book. Where highlights are sent does not change."),
         checked_func = function() return plugin.store:get("dev_club_books") == true end,
         callback = function()
             plugin.store:set("dev_club_books", plugin.store:get("dev_club_books") ~= true)

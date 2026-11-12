@@ -92,6 +92,7 @@ function Spaces.new(client, opts)
         client = client,
         credentials = {},
         did_docs = {},
+        kem_shares = {},
         resolveDid = opts.resolveDid or Client.resolveDid,
     }, Spaces)
 end
@@ -243,6 +244,27 @@ function Spaces:kemKey(did, refresh)
     return nil, { error = "NoKemKey", message = did .. " publishes no #atproto_kem key" }
 end
 
+--[[--
+A KEM key share against `did`'s #atproto_kem key, reused for
+`Spaces.KEM_SHARE_TTL` seconds. The record MAC covers the record URI and CID,
+so one shared secret can authenticate many responses from the same host; reusing
+it saves an ECDH and a key generation per record, which counts on an e-reader.
+`refresh` re-fetches the DID document and makes a new share.
+]]
+Spaces.KEM_SHARE_TTL = 10 * 60
+function Spaces:kemShare(did, refresh)
+    local cached = self.kem_shares[did]
+    if cached and not refresh and cached.until_ > os.time() then return cached.enc end
+    self.kem_shares[did] = nil
+    local kem, err = self:kemKey(did, refresh)
+    if not kem then return nil, err end
+    local enc
+    enc, err = SpaceCrypto.encapsulate(kem)
+    if not enc then return nil, { message = err } end
+    self.kem_shares[did] = { enc = enc, until_ = os.time() + Spaces.KEM_SHARE_TTL }
+    return enc
+end
+
 -- Space credentials ---------------------------------------------------------------
 
 --[[--
@@ -378,7 +400,8 @@ end
 --[[--
 Another member's record, authenticated with the record MAC. Returns { uri, cid, value }.
 On a MAC mismatch the author's DID document is re-fetched (the KEM key may have
-rotated) and the read retried once with a new key share.
+rotated) and the read retried once with a new key share. Key shares are reused
+per author for a while (Spaces:kemShare).
 ]]
 function Spaces:credGetRecord(space, repo, collection, rkey)
     local host, herr = self:pdsFor(repo)
@@ -390,11 +413,8 @@ function Spaces:credGetRecord(space, repo, collection, rkey)
         }, {
             audience = repo, pds = host,
             mac = function()
-                local kem, err = self:kemKey(repo, refresh_kem)
-                if not kem then return nil, err end
-                local enc
-                enc, err = SpaceCrypto.encapsulate(kem)
-                if not enc then return nil, { message = err } end
+                local enc, err = self:kemShare(repo, refresh_kem)
+                if not enc then return nil, err end
                 return {
                     header = SpaceCrypto.wantMacHeader(SpaceCrypto.RECORD_MAC_TYPE, SpaceCrypto.RECORD_MAC_VERSION, enc.keyShare),
                     check = function(res, headers) return verifyRecord(res, headers, uri, enc.sharedSecret) end,
