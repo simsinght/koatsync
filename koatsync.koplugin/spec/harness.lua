@@ -65,6 +65,17 @@ check("epub roundtrip", back2.pos0 == "/body/p[1]/text().0" and back2.datetime =
 check("bookmark not syncable", not Records.isSyncable({ text = "in Chapter 1", datetime = "x" }))
 check("image hl not syncable", not Records.isSyncable({ text = "", drawer = "lighten" }))
 check("hl syncable", Records.isSyncable({ text = "t", drawer = "lighten" }))
+do
+    local Sync = require("sync")
+    local priv = { text = "t", drawer = "lighten", datetime = "2026-01-01 10:00:00", [Records.PRIVATE_FIELD] = true }
+    local plan = Sync.plan({ priv }, {})
+    check("private hl is not created", #plan.creates == 0 and #plan.updates == 0 and #plan.deletes == 0)
+    plan = Sync.plan({ priv }, { ["2026-01-01 10:00:00"] = { uri = "at://x/y/z", fp = "old" } })
+    check("private hl already sent is deleted", #plan.deletes == 1 and #plan.creates == 0 and #plan.updates == 0)
+    priv[Records.PRIVATE_FIELD] = nil
+    plan = Sync.plan({ priv }, {})
+    check("shared again is created", #plan.creates == 1)
+end
 
 -- sync plan
 local annotations = {

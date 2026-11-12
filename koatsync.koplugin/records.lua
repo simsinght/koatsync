@@ -14,6 +14,9 @@ local Records = {}
 Records.BOOK = "at.stim.reading.book"
 Records.HIGHLIGHT = "at.stim.reading.highlight"
 
+--- Annotation field set (to true) on highlights the reader keeps out of their club; see privacy.lua.
+Records.PRIVATE_FIELD = "koatsync_private"
+
 -- Time -------------------------------------------------------------------------
 
 --[[--
@@ -67,12 +70,18 @@ local function posKey(pos)
     return tostring(pos)
 end
 
---- Everything about an annotation that would change the record.
+--[[--
+Everything about an annotation that would change the record. The private flag
+is only appended when set, so shared annotations keep the fingerprints already
+in their ledgers and a flip either way reads as an update.
+]]
 function Records.fingerprint(a)
-    return fnv1a(table.concat({
+    local parts = {
         a.text or "", a.note or "", a.chapter or "", a.color or "", a.drawer or "",
         posKey(a.pos0), posKey(a.pos1), tostring(a.pageno), a.pageref or "",
-    }, "\1"))
+    }
+    if a[Records.PRIVATE_FIELD] == true then parts[#parts + 1] = "private" end
+    return fnv1a(table.concat(parts, "\1"))
 end
 
 -- Books ------------------------------------------------------------------------

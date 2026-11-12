@@ -1,0 +1,36 @@
+# On a version tag (v0.2.0, ...), builds the plugin zip and a ZenPM source manifest
+# with dev/package.sh and attaches both to a GitHub release for that tag.
+#
+# The tag must be "v" + the X.Y.Z version in koatsync.koplugin/_meta.lua; the job
+# fails otherwise, before anything is published.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release files
+        env:
+          KOATSYNC_GITHUB_REPO: ${{ github.repository }}
+        run: sh dev/package.sh --tag "$GITHUB_REF_NAME"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/koatsync.koplugin.zip dist/manifest.json --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/koatsync.koplugin.zip dist/manifest.json \
+              --title "koatsync $GITHUB_REF_NAME" --generate-notes --verify-tag
+          fi

@@ -24,7 +24,9 @@ function Sync.plan(annotations, ledger)
     local plan = { creates = {}, updates = {}, deletes = {} }
     local present = {}
     for _, a in ipairs(annotations or {}) do
-        if Records.isSyncable(a) and type(a.datetime) == "string" then
+        -- A private annotation is treated as absent: it is never sent, and if it
+        -- was sent before being marked private the ledger entry turns into a delete.
+        if Records.isSyncable(a) and a[Records.PRIVATE_FIELD] ~= true and type(a.datetime) == "string" then
             local key = a.datetime
             present[key] = true
             local entry = ledger[key]

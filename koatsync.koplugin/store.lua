@@ -14,6 +14,7 @@ local DEFAULTS = {
     settle_seconds = 10,
     sync_on_close = true,
     flush_on_connect = true,
+    show_others = true,
 }
 
 --- `backend` must offer readSetting/saveSetting/flush (LuaSettings, or a stub).

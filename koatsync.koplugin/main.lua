@@ -32,6 +32,8 @@ local T = require("ffi/util").template
 
 local Client = require("atproto")
 local ExportTarget = require("exporter")
+local OthersReader = require("othersreader")
+local Privacy = require("privacy")
 local Records = require("records")
 local Store = require("store")
 local Sync = require("sync")
@@ -70,6 +72,10 @@ function Koatsync:init()
     self.ui.menu:registerToMainMenu(self)
     ExportTarget:attach(self)
     self:registerZenOSStatusItem()
+    -- Others' highlights: drawn over the page, a popup on tap (othersreader.lua).
+    self.others_reader = OthersReader.attach(self)
+    -- "Save private" in the note editor, private/shared in the highlight menu (privacy.lua).
+    self.privacy = Privacy.attach(self)
 end
 
 function Koatsync:onCloseWidget()
@@ -270,6 +276,8 @@ function Koatsync:addToMainMenu(menu_items)
                 callback = function() self.store:set("flush_on_connect", not self.store:get("flush_on_connect")); self.store:flush() end,
                 separator = true,
             },
+            OthersReader.menu(self, self.others_reader),
+            Privacy.menu(self),
             {
                 text = _("Status"),
                 keep_menu_open = true,
@@ -312,7 +320,9 @@ function Koatsync:onDispatcherRegisterActions()
     Dispatcher:registerAction("koatsync_sync_all", { category = "none", event = "KoatsyncSyncAll",
         title = _("koatsync: sync pending books"), general = true })
     Dispatcher:registerAction("koatsync_toggle_auto", { category = "none", event = "KoatsyncToggleAuto",
-        title = _("koatsync: toggle automatic sync"), general = true, separator = true })
+        title = _("koatsync: toggle automatic sync"), general = true })
+    Dispatcher:registerAction("koatsync_toggle_others", { category = "none", event = "KoatsyncToggleOthers",
+        title = _("koatsync: show/hide others' highlights"), reader = true, separator = true })
 end
 
 function Koatsync:onKoatsyncSyncBook()

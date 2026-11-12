@@ -64,7 +64,7 @@ local function httpJson(url, method, body, headers, timeout)
     local req = requester(url)
     local prev_timeout = req.TIMEOUT
     req.TIMEOUT = timeout
-    local _res, code, _rh, status = req.request{
+    local _res, code, rh, status = req.request{
         url = url,
         method = method,
         headers = headers,
@@ -82,7 +82,7 @@ local function httpJson(url, method, body, headers, timeout)
         decoded = rapidjson.decode(raw)
         if decoded == nil then decoded = raw end
     end
-    return code, decoded
+    return code, decoded, nil, rh
 end
 
 --[[--
@@ -126,9 +126,11 @@ end
 Calls an XRPC method on this client's PDS.
 
 @param method NSID
-@param opts { params = {}, body = {}, auth = bool, pds = url, no_renew = bool }
+@param opts { params = {}, body = {}, auth = bool, pds = url, no_renew = bool,
+  token = string, headers = {} or function(url) -> {} }
 @treturn table|nil decoded response
 @treturn table|nil error { status, error, message }; status nil means the network failed
+@treturn table|nil response headers (lowercase names) on success
 ]]
 function Client:call(method, opts)
     opts = opts or {}
@@ -142,15 +144,19 @@ function Client:call(method, opts)
     local token = opts.token
     if opts.auth and not token then token = self.access_jwt end
     if token then headers["Authorization"] = "Bearer " .. token end
+    -- extra headers (e.g. space credentials); a function is called with the full URL
+    local extra = opts.headers
+    if type(extra) == "function" then extra = extra(url) end
+    for k, v in pairs(extra or {}) do headers[k] = v end
 
-    local code, body, neterr = httpJson(url, opts.body ~= nil and "POST" or "GET", opts.body, headers, self.timeout)
+    local code, body, neterr, rh = httpJson(url, opts.body ~= nil and "POST" or "GET", opts.body, headers, self.timeout)
     if not code then return nil, { message = neterr } end
 
     if opts.auth and not opts.no_renew and isAuthError(code, body) then
         local renewed, rerr = self:renew()
         if not renewed then return nil, rerr end
         headers["Authorization"] = "Bearer " .. self.access_jwt
-        code, body, neterr = httpJson(url, opts.body ~= nil and "POST" or "GET", opts.body, headers, self.timeout)
+        code, body, neterr, rh = httpJson(url, opts.body ~= nil and "POST" or "GET", opts.body, headers, self.timeout)
         if not code then return nil, { message = neterr } end
     end
 
@@ -158,7 +164,7 @@ function Client:call(method, opts)
         return nil, failure(code, body)
     end
     if body == nil then body = {} end
-    return body
+    return body, nil, rh
 end
 
 -- Identity ---------------------------------------------------------------------
