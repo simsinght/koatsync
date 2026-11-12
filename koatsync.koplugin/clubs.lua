@@ -55,6 +55,9 @@ function Clubs.explain(err, what)
     if err.error == "SpaceNotFound" then
         return Club.err(E.NOT_MEMBER, (what or "That club") .. " was not found, or you have not been added to it yet.", err)
     end
+    if tostring(err.error or ""):match("Deleted") or tostring(err.message or ""):lower():match("has been deleted") then
+        return Club.err(E.NOT_FOUND, (what or "That club") .. " was deleted by whoever ran it. You can remove it from this device.", err)
+    end
     if err.status == 401 or err.error == "AuthenticationRequired" then
         return Club.err(E.NOT_SIGNED_IN, "Sign in again under Tools → koatsync.", err)
     end
@@ -203,6 +206,7 @@ function Clubs:create(name, description)
     club.owner, club.owner_handle, club.role = self:me(), self.client.handle, "owner"
     club.joinedAt = club.joinedAt or os.time()
     club.books = club.books or {}
+    club.members = club.members or { self:me() }
     club.existed = not created
     self.store:setClub(club)
     return club
@@ -274,6 +278,18 @@ function Clubs:requireOwner(uri)
     return club
 end
 
+local function cacheMember(self, uri, did, on)
+    local club = self.store:club(uri)
+    if not club then return end
+    club.members = club.members or { club.owner }
+    local out = {}
+    for _, d in ipairs(club.members) do if d ~= did then out[#out + 1] = d end end
+    if on then out[#out + 1] = did end
+    table.sort(out)
+    club.members = out
+    self.store:setClub(club)
+end
+
 --- Owner only: adds a reader to the club (read and write). Returns { did, handle }.
 function Clubs:addMember(uri, input)
     local club, err = self:requireOwner(uri)
@@ -284,6 +300,7 @@ function Clubs:addMember(uri, input)
     local res
     res, err = self.spaces:putMember(uri, did, true, true)
     if not res then return nil, Clubs.explain(err) end
+    cacheMember(self, uri, did, true)
     return { did = did, handle = handle }
 end
 
@@ -296,6 +313,7 @@ function Clubs:removeMember(uri, input)
     local res
     res, err = self.spaces:removeMember(uri, did)
     if not res then return nil, Clubs.explain(err) end
+    cacheMember(self, uri, did, false)
     return { did = did, handle = handle }
 end
 
@@ -336,8 +354,18 @@ function Clubs:roster(uri)
     set[club.owner] = true
     for d in pairs(set) do out[#out + 1] = d end
     table.sort(out)
+    club = self.store:club(uri) or club
+    club.members, club.members_at = out, os.time()
+    self.store:setClub(club)
     return { dids = out, source = source }
 end
+
+--- The member list from the last `roster` call (no network), or nil.
+function Clubs:cachedRoster(uri)
+    local club = self.store:club(uri)
+    return club and club.members or nil
+end
+
 
 --[[--
 The books the club reads, from the clubBook records every member has written
@@ -487,14 +515,27 @@ function Clubs:readers(space)
     return out
 end
 
---- Host only: deletes a book space for everyone (readers' local notes are untouched).
-function Clubs:deleteBook(space)
+--[[--
+Host only: deletes a book space for everyone (readers' local notes are
+untouched). With `club_uri`, also withdraws the book's announcement from that
+club, so it leaves the club's book list.
+]]
+function Clubs:deleteBook(space, club_uri)
     local ok, err = requireHost(self, space)
     if not ok then return nil, err end
     local res
     res, err = self.spaces:deleteSpace(space)
     if not res then return nil, Clubs.explain(err) end
     self.store:removeGuestBook(space)
+    local club = club_uri and self.store:club(club_uri)
+    if club then
+        local _a, _t, skey = Spaces.parseSpaceUri(space)
+        if skey then self.spaces:deleteRecord(club_uri, Club.BOOK, skey) end -- best effort
+        local books = {}
+        for _, b in ipairs(club.books or {}) do if b.space ~= space then books[#books + 1] = b end end
+        club.books = books
+        self.store:setClub(club)
+    end
     return true
 end
 

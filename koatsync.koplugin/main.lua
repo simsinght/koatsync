@@ -224,6 +224,35 @@ function Koatsync:busy(text)
     return function() UIManager:close(widget) end
 end
 
+--[[--
+Runs `fn` once the device is online. With Wi-Fi off it says what needs it and
+offers to turn it on (or turns it on, if KOReader is set to do so without
+asking); with Wi-Fi on but no internet it says so. Never fails silently.
+
+@param what what needs the network, as a short phrase ("Joining a club")
+]]
+function Koatsync:online(what, fn)
+    if NetworkMgr:isOnline() then return fn() end
+    if NetworkMgr:isWifiOn() and NetworkMgr:isConnected() then
+        return self:alert(T(_("%1 needs the internet, and Wi-Fi is on but cannot reach it.\n\nCheck the network and try again."), what))
+    end
+    if G_reader_settings:readSetting("wifi_enable_action") == "turn_on" then
+        return NetworkMgr:runWhenOnline(fn)
+    end
+    UIManager:show(ConfirmBox:new{
+        text = T(_("%1 needs Wi-Fi, which is off.\n\nTurn Wi-Fi on now?"), what),
+        ok_text = _("Turn on Wi-Fi"),
+        ok_callback = function() NetworkMgr:turnOnWifiAndWaitForConnection(fn) end,
+    })
+end
+
+--- What to call someone (Club.label): display name, else a short handle; never a DID. No network.
+function Koatsync:personLabel(did_or_person)
+    local p = did_or_person
+    if type(p) == "string" then p = self:clubService():person(p, true) end
+    return Club.label(p, self.client.handle or self.store:account().handle)
+end
+
 -- Menu -------------------------------------------------------------------------
 
 function Koatsync:addToMainMenu(menu_items)
@@ -798,6 +827,8 @@ function Koatsync:clubLeave(file)
     local res = Sync.removeAll(self.ctx, state, save, { kind = "space", space = link.space, spaces = self:spacesClient() })
     if res.err then return nil, Clubs.explain(res.err) end
     self:clubService():unlink(book.md5)
+    -- Do not offer the same read-along again for this file right away.
+    self:clubService():decline(book.md5, link.space)
     state.public_off = true
     save(state)
     if file then self:flushSidecar(file) end
@@ -820,18 +851,23 @@ end
 Re-reads others' highlights for the open linked book from its space and redraws
 the overlay. Network.
 
+@param opts optional { skip, progress, budget } (see ClubSource:refresh), and
+  `no_load` to leave redrawing to the caller (othersreader.lua does, when it
+  drives the refresh in the background)
 @treturn table stats from ClubSource:refresh ({ writers, verified, kept, dropped, rejected, requests, seconds, ... })
 ]]
-function Koatsync:clubRefreshOthers()
+function Koatsync:clubRefreshOthers(opts)
+    opts = opts or {}
     local link = self:linkFor()
     if not link then return nil, Club.err(Club.ERR.NOT_LINKED, _("This book is not reading along with a club.")) end
     if not self:isSignedIn() then return nil, Club.err(Club.ERR.NOT_SIGNED_IN, _("Sign in to your PDS first, under Tools → koatsync.")) end
-    local stats, err = self:clubSource():refresh(link.space)
+    if not opts.skip and self.others_reader then opts.skip = self.others_reader:hiddenSet() end
+    local stats, err = self:clubSource():refresh(link.space, opts)
     if stats then
         logger.info(string.format("koatsync: refreshed %s: %d writers (%d changed), %d verified, %d kept, %d dropped, %d rejected, %d requests, %.2fs",
             link.space, stats.writers, stats.changed_writers, stats.verified, stats.kept, stats.dropped, stats.rejected, stats.requests, stats.seconds))
     end
-    if self.others_reader then self.others_reader:load() end
+    if self.others_reader and not opts.no_load then self.others_reader:load() end
     if not stats then return nil, Clubs.explain(err, _("This book")) end
     return stats
 end
@@ -843,28 +879,124 @@ function Koatsync:onReaderReady()
     UIManager:scheduleIn(1.5, self.offer_task)
 end
 
+--- Shared highlights of the open book (not private ones), for the wording of offers.
+function Koatsync:sharedCount()
+    local n = 0
+    for _, a in ipairs(self.ui.annotation and self.ui.annotation.annotations or {}) do
+        if (a.text or a.note) and not Privacy.isPrivate(a) then n = n + 1 end
+    end
+    return n
+end
+
+--[[--
+What reading along means, in plain words, for the offer and the manual link:
+where highlights go, what happens to the ones already made, and to copies in
+the public repo.
+]]
+function Koatsync:readAlongText(desc, who)
+    local lines = {}
+    lines[#lines + 1] = T(_("Read along with %1?"), who)
+    lines[#lines + 1] = T(_("“%1” is on the club's list. Reading along means:"), desc.title or "?")
+    lines[#lines + 1] = _("• your highlights and notes in this book are shared with its readers (“Save private” in the note editor keeps one to yourself),\n• their highlights show up on your pages as you get there.")
+    local n = self:sharedCount()
+    if n > 0 then
+        lines[#lines + 1] = n == 1 and _("The highlight you already made in this book will be shared too.")
+            or T(_("The %1 highlights you already made in this book will be shared too."), n)
+    end
+    local st = self:clubStatus()
+    if st and (st.public_records or 0) > 0 then
+        lines[#lines + 1] = _("Copies already in your public repo stay there until you move them (Book club → This book).")
+    end
+    return table.concat(lines, "\n\n")
+end
+
+--[[--
+Links the open book to `desc` and reports what happened: highlights sent (or
+waiting for Wi-Fi), then others' highlights fetched in the background with a
+progress bar. Shows a wait box while sending.
+]]
+function Koatsync:readAlong(desc, who)
+    local online = NetworkMgr:isOnline()
+    local done = online and self:busy(T(_("Joining the read-along with %1…"), who)) or function() end
+    local ok, link, counts = pcall(self.clubLink, self, desc)
+    done()
+    if not ok then return self:alert(T(_("Something went wrong: %1"), tostring(link))) end
+    if not link then return self:alert(counts and counts.message or _("Something went wrong.")) end
+    if counts and counts.err then
+        self:alert(T(_("Reading along with %1. Your highlights could not be sent yet (%2); they go out with the next sync."), who, counts.err.message or "?"))
+    elseif counts then
+        local sent = counts.created + counts.updated
+        self:notify(sent > 0 and T(_("koatsync: reading along with %1 · %2 highlights shared"), who, sent)
+            or T(_("koatsync: reading along with %1"), who))
+    else
+        self:notify(T(_("koatsync: reading along with %1. Highlights are shared next time Wi-Fi is on."), who))
+    end
+    if self.others_reader then
+        self.others_reader:load()
+        if online then self.others_reader:startFetch(true) end
+    end
+    return link
+end
+
+--- The name of the club a book descriptor came through (or "the host's read-along").
+function Koatsync:clubNameFor(desc)
+    local club = desc.club and self.store:club(desc.club)
+    if club and club.name then return club.name end
+    if desc.club_name then return desc.club_name end
+    return T(_("%1's read-along"), self:personLabel(desc.host))
+end
+
+--[[--
+Asks whether to read along with `desc`. `from_offer` adds "Not this book"
+(remembered for this file) next to "Not now" (asks again the next time the
+book is opened); from the menu it is a plain yes/no.
+]]
+function Koatsync:askReadAlong(desc, from_offer, intro)
+    local who = self:clubNameFor(desc)
+    local text = self:readAlongText(desc, who)
+    if intro then text = intro .. "\n\n" .. text end
+    if from_offer then
+        UIManager:show(require("ui/widget/multiconfirmbox"):new{
+            text = text,
+            cancel_text = _("Not now"),
+            choice1_text = _("Not this book"),
+            choice1_callback = function()
+                self:clubDecline(desc)
+                self:notify(_("koatsync: won't ask again for this book"))
+            end,
+            choice2_text = _("Read along"),
+            choice2_callback = function() self:readAlong(desc, who) end,
+            cancel_callback = function() self.offer_snoozed = desc.space end,
+        })
+    else
+        UIManager:show(ConfirmBox:new{
+            text = text,
+            ok_text = _("Read along"),
+            ok_callback = function() self:readAlong(desc, who) end,
+        })
+    end
+end
+
 function Koatsync:offerReadAlong()
     if not self.ui.document or not self:isSignedIn() or self:isLinkedBook() then return end
     local service = self:clubService()
     if NetworkMgr:isWifiOn() then
-        for _, c in ipairs(service:list()) do pcall(service.books, service, c.uri) end -- TTL-gated
+        -- TTL-gated; say so when it is going to take a moment.
+        local stale = {}
+        for _, c in ipairs(service:list()) do
+            if not (c.books_at and c.books_at + Clubs.BOOKS_TTL > os.time()) then stale[#stale + 1] = c end
+        end
+        if #stale > 0 then
+            self:notify(_("koatsync: checking your clubs for new books…"))
+            UIManager:forceRePaint()
+            for _, c in ipairs(stale) do pcall(service.books, service, c.uri) end
+        end
     end
     local offers = self:clubOffers()
     if type(offers) ~= "table" or #offers == 0 then return end
     local desc = offers[1].book
-    local club = desc.club and self.store:club(desc.club)
-    local who = club and club.name or desc.club_name or _("a club")
-    UIManager:show(ConfirmBox:new{
-        text = T(_("Read along with %1?\n\n“%2” is on %1's list. Your shared highlights and notes for this book will go to the club instead of your public repo; private ones stay on this device."), who, desc.title),
-        ok_text = _("Read along"),
-        cancel_text = _("Not this book"),
-        ok_callback = function()
-            local _link, counts = self:clubLink(desc)
-            if counts then self:report(counts, true) end
-            if self.others_reader then self.others_reader:scheduleRefresh(0.5) end
-        end,
-        cancel_callback = function() self:clubDecline(desc) end,
-    })
+    if self.offer_snoozed == desc.space then return end
+    self:askReadAlong(desc, true)
 end
 
 -- ZenOS ------------------------------------------------------------------------

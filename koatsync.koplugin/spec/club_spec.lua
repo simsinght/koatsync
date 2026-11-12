@@ -241,6 +241,14 @@ do
     msp:deleteRecord(space, Records.HIGHLIGHT, "h1")
     st = src:refresh(space)
     check("deleted record dropped", #src:fetch{ space = space } == 2 and st.dropped == 1)
+    -- skip (hidden people): not fetched, cache kept; progress hook sees every verified read
+    put(msp, space, "skipped edit", "h2", { note = "changed while hidden" })
+    local before = #src:fetch{ space = space }
+    local skipped = src:refresh(space, { skip = { ["did:plc:member"] = true } })
+    check("skip: hidden writer not fetched, cache kept", skipped and skipped.skipped == 1 and skipped.verified == 0 and #src:fetch{ space = space } == before)
+    local seen, saves = 0, 0
+    local pst = src:refresh(space, { progress = function(st, save) seen = st.verified; save(); saves = saves + 1 end })
+    check("progress: called per verified read, total known", pst and seen == pst.verified and saves == pst.verified and pst.to_fetch >= pst.verified and pst.verified == 1, pst and pst.to_fetch)
     world.offline = true
     local ost, oerr = src:refresh(space)
     check("offline refresh fails but the cache still serves", ost == nil and oerr and #src:fetch{ space = space } == 2)
@@ -249,6 +257,22 @@ do
         cache = function() return memSettings() end }
     local xst, xerr = xs:refresh(space)
     check("outsider cannot read the book space", xst == nil and xerr.error == "SpaceNotFound")
+end
+
+
+-- labels: display name, else a short handle, never a DID ------------------------------
+do
+    local own = "me.pds.example.com"
+    check("shortHandle: own domain dropped", Club.shortHandle("alice.pds.example.com", own) == "alice")
+    check("shortHandle: other domain kept", Club.shortHandle("bob.bsky.social", own) == "bob.bsky.social")
+    check("shortHandle: deeper name kept", Club.shortHandle("a.b.pds.example.com", own) == "a.b.pds.example.com")
+    check("shortHandle: case-insensitive", Club.shortHandle("Alice.PDS.example.com", own) == "Alice")
+    check("shortHandle: no own handle", Club.shortHandle("alice.pds.example.com", nil) == "alice.pds.example.com")
+    check("label: display name first", Club.label({ did = "did:plc:x", handle = "alice.pds.example.com", displayName = " Alice " }, own) == "Alice")
+    check("label: short handle", Club.label({ did = "did:plc:x", handle = "alice.pds.example.com" }, own) == "alice")
+    local l = Club.label({ did = "did:plc:abcdefgh1234" }, own)
+    check("label: never a DID", not l:find("did:") and l:find("1234"), l)
+    check("label: nothing at all", Club.label(nil, own) == "a reader")
 end
 
 print(string.format("club: %d passed, %d failed", passed, failed))

@@ -94,9 +94,10 @@ function ClubSource:fetch(book)
                 local h = w.highlights[uri]
                 if h.verified and type(h.value) == "table" and type(h.value.text) == "string" then
                     local bk = w.books and w.books[h.value.book]
-                    local ids = bk and type(bk.value) == "table" and bk.value.identifiers or nil
+                    local bv = bk and type(bk.value) == "table" and bk.value or nil
+                    local ids = bv and bv.identifiers or nil
                     out[#out + 1] = { author = author, uri = uri, cid = h.cid, record = h.value,
-                        bookFileHash = ids and ids.fileHash or nil }
+                        bookFileHash = ids and ids.fileHash or nil, bookPages = bv and tonumber(bv.pages) or nil }
                 end
             end
         end
@@ -120,27 +121,44 @@ end
 
 --[[--
 Brings the cache for `space` up to date. Returns stats
-`{ writers, changed_writers, listed, verified, kept, dropped, rejected, requests, seconds, partial }`
-or nil, err (the cache keeps its previous state for whatever was not reached).
+`{ writers, changed_writers, listed, to_fetch, verified, kept, dropped, rejected, skipped,
+requests, seconds, partial }` or nil, err (the cache keeps its previous state for
+whatever was not reached).
+
+@param opts optional {
+  budget = max verified reads this time (overrides the source's budget),
+  skip = set { [did] = true } of writers not to fetch now (people the reader
+    hid): their cached records are kept as they are, and fetched again once
+    they are no longer skipped,
+  progress = function(stats, save) called after every verified read; `save()`
+    writes the cache as it stands, so `fetch` sees the records read so far. The
+    caller may yield a coroutine from it to keep the UI responsive between
+    requests (the refresh is then driven by resuming that coroutine).
+}
 ]]
-function ClubSource:refresh(space)
+function ClubSource:refresh(space, opts)
     local socket_ok, socket = pcall(require, "socket")
     local clock = socket_ok and socket.gettime or os.time
     local t0 = clock()
     local client = self.spaces.client
     local stats = { writers = 0, changed_writers = 0, listed = 0, verified = 0, kept = 0, dropped = 0, rejected = 0, requests = 0 }
-    -- Count every HTTP request this refresh makes through the client.
+    -- Count every HTTP request this refresh makes through the client. Not with
+    -- a progress hook: the caller may yield (and even abandon) the refresh
+    -- midway, and other requests run meanwhile.
+    local counting = not (opts and opts.progress)
     local orig_call = client.call
-    client.call = function(...) stats.requests = stats.requests + 1; return orig_call(...) end
-    local ok, res, err = pcall(function() return self:doRefresh(space, stats) end)
-    client.call = orig_call
+    if counting then
+        client.call = function(...) stats.requests = stats.requests + 1; return orig_call(...) end
+    end
+    local ok, res, err = pcall(function() return self:doRefresh(space, stats, opts or {}) end)
+    if counting then client.call = orig_call end
     stats.seconds = clock() - t0
     if not ok then return nil, { message = tostring(res) } end
     if not res then return nil, err, stats end
     return stats
 end
 
-function ClubSource:doRefresh(space, stats)
+function ClubSource:doRefresh(space, stats, opts)
     local cache, writers = load(self, space)
     local me = self.own_did and self.own_did()
     local repos, cursor, n = {}, nil, 0
@@ -151,7 +169,13 @@ function ClubSource:doRefresh(space, stats)
         for _, r in ipairs(list) do repos[#repos + 1] = r end
         cursor, n = page.cursor, n + 1
     until not cursor or #list < ClubSource.PAGE or n > 50
-    local budget = self.budget
+    local budget = opts.budget or self.budget
+    local skip = opts.skip or {}
+    local progress = opts.progress
+    local function save()
+        cache:saveSetting("writers", writers)
+        cache:flush()
+    end
     local present = {}
     local err_out
     for _, r in ipairs(repos) do
@@ -160,9 +184,13 @@ function ClubSource:doRefresh(space, stats)
             stats.writers = stats.writers + 1
             local w = writers[r.did] or {}
             writers[r.did] = w
-            if not (w.complete and w.repoRev == r.repoRev) then
+            if skip[r.did] then
+                stats.skipped = (stats.skipped or 0) + 1
+            elseif not (w.complete and w.repoRev == r.repoRev) then
                 stats.changed_writers = stats.changed_writers + 1
                 local complete = true
+                -- List both collections first, so the total to fetch is known up front.
+                local plans = {}
                 for _, coll in ipairs{ { key = "books", nsid = Records.BOOK }, { key = "highlights", nsid = Records.HIGHLIGHT } } do
                     local listed, lerr = listAll(self, space, r.did, coll.nsid)
                     if not listed then err_out = lerr; complete = false; break end
@@ -172,13 +200,24 @@ function ClubSource:doRefresh(space, stats)
                     local fresh = {}
                     for _, uri in ipairs(diff.keep) do fresh[uri] = cached[uri]; stats.kept = stats.kept + 1 end
                     stats.dropped = stats.dropped + #diff.drop
-                    for _, item in ipairs(diff.fetch) do
+                    stats.to_fetch = (stats.to_fetch or 0) + #diff.fetch
+                    plans[#plans + 1] = { coll = coll, diff = diff, fresh = fresh }
+                end
+                if not err_out then
+                    -- Until this writer is done, the cache must not look complete.
+                    w.complete = false
+                    for _, plan in ipairs(plans) do w[plan.coll.key] = plan.fresh end
+                end
+                for _, plan in ipairs(err_out and {} or plans) do
+                    local coll, fresh = plan.coll, plan.fresh
+                    for _, item in ipairs(plan.diff.fetch) do
                         if budget and budget <= 0 then complete = false; break end
                         local got, gerr = self.spaces:credGetRecord(space, r.did, coll.nsid, item.rkey)
                         if budget then budget = budget - 1 end
                         if got and type(got.value) == "table" then
                             fresh[item.uri] = { cid = got.cid, value = got.value, verified = true }
                             stats.verified = stats.verified + 1
+                            if progress then progress(stats, save) end
                         elseif gerr and gerr.status == nil and not gerr.error then
                             err_out = gerr; complete = false; break -- network: stop here
                         else
@@ -186,7 +225,6 @@ function ClubSource:doRefresh(space, stats)
                             complete = false
                         end
                     end
-                    w[coll.key] = fresh
                     if err_out then break end
                 end
                 w.complete = complete

@@ -5,9 +5,13 @@ rounded, a thin border, cells split by thin grey rules.
 
 * Nobody wrote a note: a one-line bar of names, each behind their marker
   (overlay.lua's tint, dash and initial, so the bar doubles as a legend).
-  Closes on any tap, or by itself after a few seconds.
+  Closes on a tap outside it, or by itself after a few seconds.
 * Someone did: a short list, one row per person, the note under the name.
-  A long note is cut after a few lines and its row opens the whole note.
+  A long note is cut after a few lines (a chevron says so).
+* Tapping a person (a name in the bar, a row in the list) turns the popup into
+  that person's card, in the same place: their whole note if they wrote one,
+  and "Hide in this book", which hides everything of theirs in this book at
+  once (decided right there; the list to bring people back is in the menu).
 
 Everything is built from stock KOReader widgets and sizes; ZenOS restyles
 those same fonts and the toolbar uses the same frame metrics, so under ZenOS
@@ -38,6 +42,7 @@ local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Widget = require("ui/widget/widget")
 local util = require("util")
+local _ = require("gettext")
 local Screen = Device.screen
 
 local NAMES_TIMEOUT = 5 -- seconds a names-only bar stays up untouched
@@ -125,16 +130,20 @@ local Popup = InputContainer:extend{
     overlay = nil,  -- the reader's Overlay (styles, marker painting)
     rows = nil,     -- from PopupLayout.rows
     anchor = nil,   -- { passage, line, tap } in screen coordinates; nil centres
-    full_row = nil, -- show this row's whole note instead
+    full_row = nil, -- show this row's card (whole note, actions) instead
+    actions = nil,  -- { hide = function(person) } (optional)
 }
+
+Popup.TEXT = { hide = _("Hide in this book") }
 
 function Popup:init()
     local m = metrics()
     self.screen_w, self.screen_h = Screen:getWidth(), Screen:getHeight()
     self.max_w = self.screen_w - 2 * m.inset
     self.row_frames = {}
+    self.name_cells = {}
     if self.full_row then
-        self.frame = card(self:buildFull(self.full_row))
+        self.frame = card(self:buildCard(self.full_row))
     elseif self.has_notes then
         local content = self:buildList(NOTE_LINES)
         if content:getSize().h > self.screen_h - 2 * m.inset then content = self:buildList(1) end
@@ -171,7 +180,8 @@ function Popup:buildNames()
     local m = metrics()
     local cells, total_w, max_cell_w = {}, 0, 0
     for _, row in ipairs(self.rows) do
-        local cell = FrameContainer:new{
+        local cell
+        cell = FrameContainer:new{
             bordersize = 0, padding = 0,
             padding_left = m.pad_h + m.pad_h / 2, padding_right = m.pad_h + m.pad_h / 2,
             padding_top = m.pad_v, padding_bottom = m.pad_v,
@@ -179,6 +189,7 @@ function Popup:buildNames()
         }
         local w = cell:getSize().w
         cells[#cells + 1] = cell
+        self.name_cells[#self.name_cells + 1] = { frame = cell, row = row }
         total_w = total_w + w
         max_cell_w = math.max(max_cell_w, w)
     end
@@ -265,6 +276,47 @@ function Popup:buildList(max_lines)
     return group
 end
 
+function Popup:canHide()
+    return self.actions and type(self.actions.hide) == "function"
+end
+
+--- The action cell of a card, remembered for taps.
+function Popup:actionCell(width)
+    local m = metrics()
+    local label = TextWidget:new{ text = Popup.TEXT.hide, face = m.name_face }
+    local frame = FrameContainer:new{
+        bordersize = 0, padding = 0, width = width,
+        padding_left = m.pad_h + m.pad_h / 2, padding_right = m.pad_h + m.pad_h / 2,
+        padding_top = m.pad_v, padding_bottom = m.pad_v,
+        label,
+    }
+    self.action_frame = frame
+    return frame
+end
+
+--[[--
+A person's card: their name and, if they wrote one, their whole note, then
+"Hide in this book". Without a note it is a single bar: name | action.
+]]
+function Popup:buildCard(row)
+    local m = metrics()
+    if not self:canHide() then return self:buildFull(row) end
+    if #row.notes == 0 then
+        local name = FrameContainer:new{
+            bordersize = 0, padding = 0,
+            padding_left = m.pad_h + m.pad_h / 2, padding_right = m.pad_h + m.pad_h / 2,
+            padding_top = m.pad_v, padding_bottom = m.pad_v,
+            nameLine(self.overlay, row, math.floor(self.max_w / 2)),
+        }
+        local action = self:actionCell()
+        local h = math.max(name:getSize().h, action:getSize().h)
+        return HorizontalGroup:new{ align = "center", name, vline(h), action }
+    end
+    local body = self:buildFull(row)
+    local w = body:getSize().w
+    return VerticalGroup:new{ align = "left", body, hline(w), self:actionCell(w) }
+end
+
 --- One person's whole note, scrolling if it is taller than most of the screen.
 function Popup:buildFull(row)
     local m = metrics()
@@ -313,15 +365,35 @@ function Popup:onClose()
     return true
 end
 
+function Popup:openCard(row)
+    UIManager:close(self)
+    UIManager:show(Popup:new{ overlay = self.overlay, rows = self.rows, full_row = row,
+        anchor = self.anchor, actions = self.actions })
+end
+
 --- Outside: close, and keep the tap from also turning the page.
 function Popup:onTapPopup(_, ges)
     if not ges.pos:intersectWith(self.dimen) then return self:onClose() end
-    if not self.has_notes and not self.full_row then return self:onClose() end
-    for _, rf in ipairs(self.row_frames) do
-        if rf.cut and rf.frame.dimen and ges.pos:intersectWith(rf.frame.dimen) then
+    if self.full_row then
+        if self:canHide() and self.action_frame and self.action_frame.dimen
+                and ges.pos:intersectWith(self.action_frame.dimen) then
             UIManager:close(self)
-            UIManager:show(Popup:new{ overlay = self.overlay, rows = self.rows, full_row = rf.row,
-                anchor = self.anchor })
+            self.actions.hide(self.full_row.person)
+        end
+        return true
+    end
+    if not self.has_notes then
+        for _, nc in ipairs(self.name_cells) do
+            if self:canHide() and nc.frame.dimen and ges.pos:intersectWith(nc.frame.dimen) then
+                self:openCard(nc.row)
+                return true
+            end
+        end
+        return self:onClose()
+    end
+    for _, rf in ipairs(self.row_frames) do
+        if (rf.cut or self:canHide()) and rf.frame.dimen and ges.pos:intersectWith(rf.frame.dimen) then
+            self:openCard(rf.row)
             return true
         end
     end
@@ -341,11 +413,12 @@ Shows what a tap on others' highlights found.
 @param overlay the reader's Overlay
 @param items overlay items under the tap
 @param anchor { passage = {x0,y0,x1,y1}, line = {x0,y0,x1,y1}, tap = {x,y} }
+@param actions optional { hide = function(person) } for the person card
 ]]
-function OthersPopup.show(overlay, items, anchor)
+function OthersPopup.show(overlay, items, anchor, actions)
     local rows, has_notes = PopupLayout.rows(items)
     if #rows == 0 then return end
-    local popup = Popup:new{ overlay = overlay, rows = rows, has_notes = has_notes, anchor = anchor }
+    local popup = Popup:new{ overlay = overlay, rows = rows, has_notes = has_notes, anchor = anchor, actions = actions }
     UIManager:show(popup)
     return popup
 end

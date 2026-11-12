@@ -72,6 +72,43 @@ res = Others.place({ entry("did:plc:x", "X", "at://x/1", "boom", "h") },
     { cache = memCache(), version = 1, locate = function() error("kaboom") end })
 check("locate errors become unplaced", #res.unplaced == 1 and res.unplaced[1].placement.reason:match("kaboom"))
 
+-- incremental placement: cached first, the rest in steps, nearest first, hidden skipped
+do
+    local function e(did, uri, text, page)
+        return { author = { did = did, handle = did .. ".test" }, uri = uri, cid = "c1", bookFileHash = "other",
+                 bookPages = 100, record = { text = text, locator = page and { page = page } or nil } }
+    end
+    local list = { e("did:plc:a", "u1", "far", 90), e("did:plc:a", "u2", "near", 12), e("did:plc:b", "u3", "hidden", 10),
+                   e("did:plc:a", "u4", "nopage") }
+    local order = {}
+    local function loc(rec) order[#order + 1] = rec.text; return { status = "placed", pos0 = "x", pos1 = "y" } end
+    local c = memCache()
+    local job = Others.start(list, { cache = c, version = 1, locate = loc, hidden = { ["did:plc:b"] = true },
+        priority = function(en) local f = Others.fraction(en); return f and math.abs(f - 0.1) or 2 end })
+    check("job: hidden left out", job.out.hidden == 1 and job.out.pending == 3, job.out.pending)
+    check("job: nothing placed before a step", #order == 0 and not job:done())
+    local new = job:step(1)
+    check("job: nearest first", order[1] == "near" and #new == 1 and job.out.pending == 2, order[1])
+    check("job: step saves progress", c.data.flushes == 1 and c.data.placements["u2#c1"] ~= nil)
+    job:step()
+    check("job: unknown position last", order[3] == "nopage" and job:done(), order[3])
+    -- a new job over the same cache: all cached, nothing to compute; the hidden one still not placed
+    order = {}
+    local again = Others.start(list, { cache = c, version = 1, locate = loc, hidden = { ["did:plc:b"] = true } })
+    check("job: resumes from cache", again:done() and #order == 0 and #again.out.placed == 3)
+    -- bringing them back places them, and their cached placement survives being hidden
+    local back = Others.start(list, { cache = c, version = 1, locate = loc })
+    back:step()
+    check("job: unhidden person placed", #back.out.placed == 4 and back.out.hidden == 0)
+    order = {}
+    Others.start(list, { cache = c, version = 1, locate = loc, hidden = { ["did:plc:b"] = true } })
+    local after = Others.start(list, { cache = c, version = 1, locate = loc })
+    check("job: hiding keeps the cached placement", after:done() and #order == 0)
+    check("fraction", Others.fraction(list[1]) == 0.9 and Others.fraction(list[4]) == nil)
+    local labelled = Others.people(list, nil, function(a) return "L:" .. a.handle end)
+    check("people: label function", labelled["did:plc:a"].label == "L:did:plc:a.test")
+end
+
 -- slots are stable whatever the order
 local p1 = Others.people({ entries[1], entries[2] })
 local p2 = Others.people({ entries[2], entries[1] })

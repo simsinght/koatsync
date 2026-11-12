@@ -43,11 +43,11 @@ atproto spaces alpha.
 | | |
 | --- | --- |
 | Mirroring your highlights to a PDS | works, in daily use |
-| Clubs: create, add members, join by owner handle + club name | works, menus are still plain |
+| Clubs: create, add members, join by owner name + club name | works |
 | Read-alongs: one permissioned space per book, offered when you open a matching book | works |
 | Others' highlights on the page, re-anchored across editions, cached for offline | works |
 | "Save private" in the note editor of a club book | works |
-| Hide a person, spoiler-safe lists, friendlier club screens | next |
+| Hide a person per book, spoiler-safe lists, friendlier club screens | works, being tried by the club |
 
 Looks best with [ZenOS](https://github.com/xZenLabs/zen-os). Works without it.
 
@@ -140,15 +140,25 @@ default, and the automatic mirror makes one unnecessary.
 Highlights other readers made in the same book are drawn over the page with a dashed outline (and a
 per-person tint and coloured initial on colour screens). They are never added to your own
 annotations, so they are never synced as yours. Tap one for a small popup naming who made it (with
-their marker); if anyone left a note, it lists each person with their note instead (tap a long note
-to read all of it). Your own highlights, links and page-turn taps behave as before.
+their marker); if anyone left a note, it lists each person with their note instead. Tap a person
+in it for their card: their whole note, and **Hide in this book**, which hides everything of theirs
+in that book at once (they are then neither fetched nor placed nor drawn). Your own highlights,
+links and page-turn taps behave as before. People are shown by display name, else by a short
+handle (the server part is dropped when it is your own).
 
 - The book does not have to be the same file. When the file hash matches, the stored xpointers are
   used; otherwise the passage is searched for in your edition, tolerating punctuation and small
   wording differences. Results are cached per file, so each highlight is searched for once.
-- **Tools → koatsync → Others' highlights** has the show/hide toggle, the count of placed and
-  not-found passages (tap it to list the ones not found), and a re-search. The toggle is also a
-  dispatcher action, `koatsync: show/hide others' highlights`.
+- Fetching and placing run in the background, a few at a time, nearest your reading position first,
+  so the book stays readable while a first open works through a few dozen highlights. A small bar
+  at the bottom shows progress when there is a lot to do; any tap dismisses it and the work carries
+  on. Closing the book midway loses nothing: the next open continues.
+- **Tools → koatsync → Others' highlights** has the show/hide toggle, a count (on their pages / not in
+  this edition / hidden; tap it for a short explanation), **Hidden in this book** to show people
+  again, a refresh, and an optional status-bar cue (`✎ 2` on pages where two people left notes; off
+  by default). The toggle is also a dispatcher action, `koatsync: show/hide others' highlights`.
+- Spoilers: nothing lists other people's passages or notes. The popup only shows what is under your
+  finger on the page you are reading; everything else is counts.
 - In a book that reads along with a club (below) they come from the book's space, cached on the
   device so the overlay works offline with the last fetched state. They are refreshed when the book
   opens with Wi-Fi already on, after each sync, and from **Others' highlights → Refresh from the club**.
@@ -159,26 +169,38 @@ to read all of it). Your own highlights, links and page-turn taps behave as befo
 ## Book clubs
 
 A club is an atproto permissioned space; each book the club reads gets a space of its own, so who
-reads which book can differ. **Tools → koatsync → Book club** has (plain, unpolished) entries for all
-of it:
+reads which book can differ. Everything is under **Tools → koatsync → Book club** (in ZenOS, add
+koatsync to the Launcher with **Add → Plugin Menu**). Every step that needs the network asks for
+Wi-Fi if it is off, shows what it is doing, and ends in a plain-language result or error.
 
-- **Create a club…** (you own it), then in the club's submenu **Add a member…** by handle. On a shared
-  PDS a bare name is enough (`alice` becomes `alice.<your domain>`).
-- **Join a club…** asks for the owner's handle and the club's name, once. It works after the owner
-  has added you; until then the server cannot tell "no such club" from "not added yet".
-- **Host this book for the club…** (any member can): creates the book's space under your account,
-  adds the club's members (minus anyone you leave out, plus guests who are not in the club) and
-  announces the book to the club.
-- When you open a book that matches a club book (same ISBN, or the same title and author surname,
-  so other editions count), koatsync asks "Read along with <club>?". "Not this book" is remembered
-  for that file. **Link this book to a club book** does the same by hand; **Join a book as a guest…**
-  takes the host's handle and the book's name.
+For a member:
+
+- **Join a club…** asks who runs it and the club's name (on a shared server the first part of a name
+  is enough: `sam` becomes `sam.<your server>`). It works once the owner has added you; until then
+  the message says so and offers **Try again**.
+- When you open a book on the club's list (same ISBN, or the same title and author surname, so other
+  editions count), koatsync asks "Read along with <club>?", saying where your highlights will go and
+  that the ones you already made are shared too. **Not now** asks again next time you open the book;
+  **Not this book** stops asking for that file. **Read along with a club book** does the same by hand
+  (it also has **Join a book by its host's name…** for a guest).
+- **Reading along: <club>** shows where the book stands. **This book → Leave this read-along…**
+  deletes your shared highlights from the club; your own highlights and notes stay, and the book is
+  not offered again automatically.
+- **<club> → Remove this club from this device…** forgets it locally; nothing is deleted.
+
+For whoever runs the club or hosts a book:
+
+- **Create a club…** (one field), then **Add members** (names separated by commas). Members are
+  listed under the club, where tapping one offers to remove them.
+- **<club> → Host this book for the club…** shows everyone in the club ticked; untick who should not
+  read it, optionally rename the book or add guests from outside the club, then **Host**.
+- **This book** (host) has **Add readers…** (club members not yet in, or anyone by name), **Remove
+  readers…**, and **Delete this book's read-along for everyone…**; **<club> → Delete this club for
+  everyone…** removes the club. Each destructive step says exactly what goes and what stays.
 - In a linked book your shared highlights and notes go to your own repo inside the book's space, not
   your public repo. "Save private" ones never leave the device. If the book was mirrored publicly
-  before, **Move public highlights into the club…** deletes the public copies once the club has
-  them; until then the public copy gets edits and deletions but nothing new.
-- **Leave this read-along…** deletes your records from the book's space; your own highlights and
-  notes in KOReader are untouched, and the book does not go back to your public repo unless you ask.
+  before, **This book → Move public highlights into the club…** deletes the public copies once the
+  club has them; until then the public copy gets edits and deletions but nothing new.
 
 Others' highlights are read with a space credential and shown only once verified with a record MAC
 (`clubsource.lua` explains the scheme and its cost).
@@ -206,8 +228,9 @@ Clubs (see `club.lua` for the full picture):
   host writes it into the club space (rkey = the book space's key) and into the book space (rkey `self`).
 - Inside a book space every reader writes the same `at.stim.reading.book` and
   `at.stim.reading.highlight` records as in a public repo, into their own repo there.
-- On the device: clubs, known books, links (keyed by the file's partial MD5), declined offers and
-  display names in `settings/koatsync.lua`; per book, the public ledger stays at the top of the
+- On the device: clubs (with their last member list), known books, links (keyed by the file's
+  partial MD5), declined offers and display names in `settings/koatsync.lua`; per book, people hidden
+  in it under `hidden_people` in the sidecar's `koatsync` table, the public ledger stays at the top of the
   sidecar's `koatsync` table and each book space gets its own ledger under `spaces[<space uri>]`;
   others' records per book space in `cache/koatsync/space-*.lua`.
 
@@ -263,9 +286,11 @@ Module map:
 - `club.lua`: clubs, the pure part (slugs, book matching, record builders, rosters, listing diffs).
 - `clubs.lua`: clubs over spaces (create/join, members, host/join books, links to local files).
 - `clubsource.lua`: others' highlights from a book space, verified and cached on disk.
-- `clubmenu.lua`: the bare Book club menu.
+- `clubmenu.lua`: the Book club menu and its screens (join, host, members, readers, leave, delete).
 - `fixturesource.lua`: others' highlights from a JSON file per book (dev fallback).
 - `overlay.lua`: draws others' highlights as a reader view module.
-- `othersreader.lua`: others' highlights in the reader (loading, taps, menu).
+- `othersreader.lua`: others' highlights in the reader (background fetching and placing, hiding people,
+  taps, menu, the optional status-bar cue).
+- `othersprogress.lua`: the dismissable progress bar for that background work.
 - `otherspopup.lua`, `popuplayout.lua`: the tap popup, and its pure row/placement logic.
 - `main.lua`: menus, dispatcher actions, events, ZenOS hooks.

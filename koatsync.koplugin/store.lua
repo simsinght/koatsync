@@ -89,7 +89,8 @@ end
 Plugin-wide club state (in koatsync.lua next to the account):
 
 * `clubs`: club space uri -> { uri, name, slug, owner, owner_handle, role =
-  "owner"|"member", joinedAt, books = { descriptor... }, books_at }
+  "owner"|"member", joinedAt, books = { descriptor... }, books_at,
+  members = { did... } (last roster read), members_at }
 * `guest_books`: book space uri -> descriptor (books joined by name, without a club)
 * `links`: partial md5 of a local file -> { space, title, club, host, file, linkedAt }
 * `declined`: partial md5 -> { [book space uri] = os.time() } ("read along?" said no)

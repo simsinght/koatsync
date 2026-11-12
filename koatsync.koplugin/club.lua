@@ -89,6 +89,44 @@ function Club.normalizeHandle(input, own_handle)
     return h
 end
 
+--[[--
+A handle as short as it can be read unambiguously by this reader: the domain
+the reader's own handle lives under is dropped (on a shared PDS
+"alice.pds.example.com" becomes "alice"); any other handle is kept whole.
+]]
+function Club.shortHandle(handle, own_handle)
+    if type(handle) ~= "string" or handle == "" then return nil end
+    handle = handle:gsub("^@", "")
+    local domain = type(own_handle) == "string" and own_handle:lower():match("^[^.]+%.(.+)$")
+    if domain then
+        local suffix = "." .. domain
+        local h = handle:lower()
+        if #h > #suffix and h:sub(-#suffix) == suffix then
+            local name = handle:sub(1, #handle - #suffix)
+            if not name:find(".", 1, true) then return name end
+        end
+    end
+    return handle
+end
+
+--[[--
+What to call a person in the UI: their display name, else their short handle
+(see shortHandle), else "a reader" with a few characters of their DID to tell
+two unknown people apart. Never a whole DID.
+
+@param p { did, handle?, displayName? }
+]]
+function Club.label(p, own_handle)
+    p = type(p) == "table" and p or {}
+    local dn = type(p.displayName) == "string" and p.displayName:gsub("^%s+", ""):gsub("%s+$", "") or ""
+    if dn ~= "" then return dn end
+    local h = Club.shortHandle(p.handle, own_handle)
+    if h then return h end
+    local tail = type(p.did) == "string" and p.did:match("([%w]+)$") or nil
+    if tail and #tail >= 4 and not tail:match("^did$") then return "reader " .. tail:sub(-4) end
+    return "a reader"
+end
+
 -- Books ------------------------------------------------------------------------
 
 --- ISBN-10 to ISBN-13 (978 prefix); 13s pass through; anything else nil.
