@@ -1,11 +1,52 @@
-# koatsync
+<p align="center">
+  <a href="https://sims.computer/screenshotForKoAtKlub.png">
+    <img src="https://sims.computer/screenshotForKoAtKlub/preview.jpg" width="100%"
+         alt="A Kindle running KOReader held up in a lamp-lit room, with terminals projected on the walls">
+  </a>
+</p>
 
-A [KOReader](https://koreader.rocks/) plugin that mirrors your highlights and notes to your own
-[AT Protocol](https://atproto.com/) PDS, as `at.stim.reading.book` and `at.stim.reading.highlight`
-records. Your sidecar files stay the source of truth; the PDS is a durable, queryable copy that any
-appview can index.
+<h1 align="center">koatsync</h1>
 
-Status: early. Works against a self-hosted PDS; not yet published to any plugin store.
+<p align="center">
+  <em>a book club in the margins.</em><br>
+  your <a href="https://koreader.rocks/">KOReader</a> highlights, kept on your own
+  <a href="https://atproto.com/">AT Protocol</a> PDS, and shared with the people you read with.
+</p>
+
+---
+
+I whipped this up on vacation because my highlights were stuck on a Kindle. Then it turned into a
+book club thing: a few of us read the same book on e-readers, and I wanted to see what everyone
+else underlined, right there on the page, without all of us moving into somebody's app.
+
+So koatsync does two things:
+
+- **Keeps your highlights somewhere that's yours.** Every highlight and note is mirrored to your
+  PDS as `at.stim.reading.book` and `at.stim.reading.highlight` records.
+- **Puts your friends in the margins.** Other readers' highlights show up over the page, even when
+  their copy of the book isn't the same file as yours. Tap one to see who it was and what they said.
+
+### The rules it plays by
+
+- **Your notes stay your notes.** KOReader's own sidecar files remain the source of truth.
+  Everything here is a layer on top; uninstall it and your books are exactly as they were.
+- **No server in the middle.** The device talks to PDSes directly.
+- **Private means private.** Club sharing runs on atproto permissioned spaces, and a note saved as
+  private never leaves the device.
+- **It doesn't touch your Wi-Fi.** Syncs happen when the radio is already on, and wait otherwise.
+
+### Where it's at
+
+Early, and moving fast.
+
+| | |
+| --- | --- |
+| Mirroring your highlights to a PDS | works, in daily use |
+| Others' highlights on the page, re-anchored across editions | works, fed by a local file for now |
+| "Save private" in the note editor | works, behind a dev switch |
+| Clubs: one permissioned space per book, invites, read-along | protocol client done, being wired in |
+
+Looks best with [ZenOS](https://github.com/xZenLabs/zen-os). Works without it.
 
 ## What it does
 
@@ -34,10 +75,8 @@ Needs KOReader 2025.04 or newer (for the Export Highlights integration).
 
 ### Install with ZenPM
 
-koatsync is not in [ZenPM](https://github.com/xZenLabs/zen-pm)'s built-in ZenLabs Repo yet, and
-no release has been published yet. Each tagged release carries `koatsync.koplugin.zip` and a
-one-package ZenPM `manifest.json`, so once the first one is out you can add this project as a
-source: in ZenPM open **Sources** and add
+Every tagged release carries `koatsync.koplugin.zip` and a one-package
+[ZenPM](https://github.com/xZenLabs/zen-pm) `manifest.json`. In ZenPM open **Sources** and add
 
 ```
 https://github.com/simsinght/koatsync/releases/latest/download
@@ -47,6 +86,8 @@ https://github.com/simsinght/koatsync/releases/latest/download
 install **koatsync**. ZenPM offers an update whenever a newer release is tagged. An update replaces
 the whole `koatsync.koplugin` folder; your sign-in, settings and caches live in KOReader's settings
 and data folders and are kept.
+
+koatsync is not in ZenPM's built-in ZenLabs Repo yet, so it won't show up there without the source.
 
 ## Sign in
 
