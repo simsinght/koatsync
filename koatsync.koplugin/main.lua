@@ -34,6 +34,7 @@ local Client = require("atproto")
 local Club = require("club")
 local ClubMenu = require("clubmenu")
 local ClubSource = require("clubsource")
+local ClubProgress = require("clubprogress")
 local Clubs = require("clubs")
 local ExportTarget = require("exporter")
 local NoteButton = require("notebutton")
@@ -420,18 +421,31 @@ function Koatsync:onSettle()
     self:reportAuto(counts)
 end
 
+--[[--
+Quiet like the settle sync: nothing on success, a failure only when it is news
+(reportAuto). A read-along book also notes where the reader got to, and sends
+it if Wi-Fi is up anyway, even with no highlight to sync; otherwise it goes
+with the book's next sync.
+]]
 function Koatsync:onCloseDocument()
     UIManager:unschedule(self.settle_task)
     if not self.ui.document or not self:isSignedIn() then return end
-    if not self.store:get("sync_on_close") then return end
+    -- Depending on how the reader is closed, KOReader may already have
+    -- written the sidecar, so what changed here has to be flushed too.
+    local noted = self:noteProgress()
+    if not self.store:get("sync_on_close") or not NetworkMgr:isWifiOn() then
+        if noted then self.ui.doc_settings:flush() end
+        return
+    end
     local file = self.ui.document.file
     local dirty = self.store:get("dirty") or {}
-    if dirty[file] and NetworkMgr:isWifiOn() then
+    if dirty[file] then
         local counts = self:syncOpenBook()
-        -- Depending on how the reader is closed, KOReader may already have
-        -- written the sidecar, so the ledger has to be flushed here too.
         self.ui.doc_settings:flush()
-        self:report(counts, false)
+        self:reportAuto(counts)
+    elseif noted then
+        self:pushOpenProgress()
+        self.ui.doc_settings:flush()
     end
 end
 
@@ -474,6 +488,8 @@ function Koatsync:openBook()
         pages = ui.document:getPageCount(),
         md5 = ui.doc_settings:readSetting("partial_md5_checksum"),
         context_fn = self:contextFn(),
+        -- Where the reader is, for a read-along (only asked for when one is synced).
+        progress_fn = function() return self:progressSnapshot() end,
     }
 end
 
@@ -533,6 +549,7 @@ function Koatsync:pushBookState(book, state, save)
     local dest = { kind = "space", space = link.space, spaces = self:spacesClient() }
     local counts = Sync.pushTo(self.ctx, book, state, save, dest)
     if counts.err then return counts end
+    self:pushProgress(book, state, save, link)
     if Sync.heldCount(state) > 0 then
         local pc = Sync.pushBook(self.ctx, book, state, save, { no_creates = true })
         counts.updated = counts.updated + pc.updated
@@ -570,11 +587,12 @@ function Koatsync:flushDirty(interactive)
     if not interactive and not NetworkMgr:isWifiOn() then return end
     local done = interactive and self:busy(T(_("Syncing %1 book(s)…"), #files)) or function() end
     local total = { created = 0, updated = 0, deleted = 0 }
-    local failed = 0
+    local failed, first_err = 0, nil
     for _, file in ipairs(files) do
         local counts = self:syncFile(file)
         if counts.err then
             failed = failed + 1
+            first_err = first_err or counts.err
             if Client.isNetworkError(counts.err) then break end -- no point continuing offline
         else
             total.created = total.created + counts.created
@@ -583,8 +601,12 @@ function Koatsync:flushDirty(interactive)
         end
     end
     done()
+    if not interactive then
+        -- When Wi-Fi connects: as quiet as the settle sync (reportAuto), by the first failure's kind.
+        return self:reportAuto({ err = first_err })
+    end
     if failed > 0 then total.err = { message = T(_("%1 book(s) could not be synced"), failed) } end
-    self:report(total, interactive)
+    self:report(total, true)
 end
 
 function Koatsync:report(counts, interactive)
@@ -614,9 +636,11 @@ function Koatsync:report(counts, interactive)
 end
 
 --[[--
-The outcome of the sync a few seconds after each highlight (onSettle): quiet on
-success; a failure only when it is news, by SyncNotice.decide (a new kind of
-failure, or the same kind a day later). The book stays dirty either way.
+The outcome of every sync the reader did not ask for (a few seconds after each
+highlight, on closing a book, when Wi-Fi connects): quiet on success; a failure
+only when it is news, by SyncNotice.decide (a new kind of failure, or the same
+kind a day later). The book stays dirty either way. Manual syncs and the
+export target use `report` instead.
 ]]
 function Koatsync:reportAuto(counts)
     if not counts.err then return end
@@ -860,6 +884,9 @@ function Koatsync:clubLeave(file)
     if not link then return nil, Club.err(Club.ERR.NOT_LINKED, _("This book is not reading along with a club.")) end
     local res = Sync.removeAll(self.ctx, state, save, { kind = "space", space = link.space, spaces = self:spacesClient() })
     if res.err then return nil, Clubs.explain(res.err) end
+    -- Where the reader was goes too (best effort: there may be none).
+    local spaces = self:spacesClient()
+    pcall(spaces.deleteRecord, spaces, link.space, ClubProgress.NSID, ClubProgress.RKEY)
     self:clubService():unlink(book.md5)
     -- Do not offer the same read-along again for this file right away.
     self:clubService():decline(book.md5, link.space)
@@ -906,6 +933,105 @@ function Koatsync:clubRefreshOthers(opts)
     return stats
 end
 
+-- Where the reader is in a read-along book (clubprogress.lua) -----------------------
+--[[--
+Each reader's device keeps one small record in the book's space (never the
+public repo) saying where they are: chapter number of their own TOC (or none
+for a document without one), percentage, finished or not. It is only written
+alongside a sync that is happening anyway (the settle sync, closing the book
+with Wi-Fi on, a sync when Wi-Fi connects, a manual sync), and only when it
+moved enough to say something new (ClubProgress.changed). In the book's
+koatsync sidecar state, under `spaces[<space>]`: `progress_sent` (what the
+space holds) and `progress_now` (noted on closing the book, not sent yet).
+Reading KOReader's position and book status is all it does with them.
+]]
+
+--- Where the reader is in the open book now ({ percent, chapter?, finished }), or nil.
+function Koatsync:progressSnapshot()
+    local ui = self.ui
+    if not (ui and ui.document) then return nil end
+    local ok, snap = pcall(function()
+        local page = ui.getCurrentPage and ui:getCurrentPage()
+            or (ui.view and ui.view.state and ui.view.state.page)
+        local toc
+        if ui.toc then
+            if ui.toc.fillToc then ui.toc:fillToc() end
+            toc = ui.toc.toc
+        end
+        local summary = ui.doc_settings and ui.doc_settings:readSetting("summary")
+        return ClubProgress.snapshot{ page = page, pages = ui.document:getPageCount(), toc = toc,
+            status = type(summary) == "table" and summary.status or nil }
+    end)
+    if not ok then logger.warn("koatsync: reading position:", snap); return nil end
+    return snap
+end
+
+--[[--
+Sends this reader's progress record into the book space if it moved enough
+(the open book's position via `book.progress_fn`, else what was noted at
+close). Best effort: a failure is logged, kept for next time, and never
+touches the highlight sync's counts or the book's dirty flag. Network.
+
+@treturn boolean whether a record was written
+]]
+function Koatsync:pushProgress(book, state, save, link)
+    local d = Sync.destState(state, { kind = "space", space = link.space })
+    local now = (book.progress_fn and book.progress_fn()) or d.progress_now
+    if not ClubProgress.changed(d.progress_sent, now) then
+        if d.progress_now then d.progress_now = nil; save(state) end
+        return false
+    end
+    local spaces = self:spacesClient()
+    local ok, res, err = pcall(spaces.putRecord, spaces, link.space, ClubProgress.NSID, ClubProgress.RKEY, ClubProgress.record(now))
+    if not ok or not res then
+        logger.info("koatsync: progress not sent:", ok and (err and (err.error or err.message)) or res)
+        d.progress_now = now
+        save(state)
+        return false
+    end
+    d.progress_sent, d.progress_now = now, nil
+    save(state)
+    return true
+end
+
+--- On closing a read-along book: notes where the reader got to, if it moved enough. No network.
+function Koatsync:noteProgress()
+    local link = self:linkFor()
+    if not link then return false end
+    local snap = self:progressSnapshot()
+    local ds = self.ui.doc_settings
+    local state = Store.bookState(ds)
+    local d = Sync.destState(state, { kind = "space", space = link.space })
+    if not ClubProgress.changed(d.progress_sent, snap) then return false end
+    d.progress_now = snap
+    Store.saveBookState(ds, state, false)
+    return true
+end
+
+--- Sends the open book's noted progress on its own (no highlight sync due). Network.
+function Koatsync:pushOpenProgress()
+    local link = self:linkFor()
+    if not link then return false end
+    local ds = self.ui.doc_settings
+    local state = Store.bookState(ds)
+    return self:pushProgress({}, state, function(s) Store.saveBookState(ds, s, false) end, link)
+end
+
+--[[--
+Others' progress in the open read-along book, from the cache (no network):
+`{ { did, label, value } }`, hidden people included (the callers leave them out).
+]]
+function Koatsync:othersProgress()
+    local link = self:linkFor()
+    if not link then return {} end
+    local own = self.client.handle or self.store:account().handle
+    local out = {}
+    for _, p in ipairs(self:clubSource():progress(link.space)) do
+        out[#out + 1] = { did = p.did, label = Club.label(p.author, own), value = p.value }
+    end
+    return out
+end
+
 --- On opening a book: refresh stale club lists if Wi-Fi is up, then offer a matching club book.
 function Koatsync:onReaderReady()
     if not self:isSignedIn() or not self.ui.document then return end
@@ -931,7 +1057,7 @@ function Koatsync:readAlongText(desc, who)
     local lines = {}
     lines[#lines + 1] = T(_("Read along with %1?"), who)
     lines[#lines + 1] = T(_("“%1” is on the club's list. Reading along means:"), desc.title or "?")
-    lines[#lines + 1] = _("• your highlights and notes in this book are shared with its readers (“Save private” in the note editor keeps one to yourself),\n• their highlights show up on your pages as you get there.")
+    lines[#lines + 1] = _("• your highlights and notes in this book are shared with its readers (“Save private” in the note editor keeps one to yourself),\n• so is where you are in the book: which chapter, how far through, and when you finish,\n• their highlights show up on your pages as you get there.")
     local n = self:sharedCount()
     if n > 0 then
         lines[#lines + 1] = n == 1 and _("The highlight you already made in this book will be shared too.")

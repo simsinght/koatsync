@@ -8,6 +8,7 @@ ROOT=$(cd "$HERE/../.." && pwd)
 # runs the space crypto spec, or the spaces round trip with `spaces`, or the book-club story
 # with `club`, on that install's own luajit, rocks and libcrypto (found through its
 # ffi.loadlib, as on a device).
+# `progress` is a two-account check that readers exchange progress records in a spec book space.
 # `club` also needs ATP_OUTSIDER_HANDLE and ATP_OUTSIDER_PASSWORD (a third account) in the
 # environment or .env.
 if [ -n "$KOREADER" ]; then
@@ -21,6 +22,10 @@ if [ -n "$KOREADER" ]; then
     if [ "$1" = "club" ]; then
         set -a; . "$ROOT/.env"; set +a
         SPEC=club_integration.lua
+    fi
+    if [ "$1" = "progress" ]; then
+        set -a; . "$ROOT/.env"; set +a
+        SPEC=progress_integration.lua
     fi
     cd "$KOREADER"
     exec ./luajit -e 'local ffi = require("ffi"); ffi.log = function() end; require("ffi/loadlib")' "$HERE/$SPEC"
@@ -41,4 +46,8 @@ if [ "$1" = "club" ]; then
     set -a; . "$ROOT/.env"; set +a
     exec luajit club_integration.lua
 fi
-luajit harness.lua && luajit plugin_spec.lua && luajit spacecrypto_spec.lua && luajit anchor_spec.lua && luajit others_spec.lua && luajit popuplayout_spec.lua && luajit privacy_spec.lua && luajit notebutton_spec.lua && luajit club_spec.lua && luajit syncnotice_spec.lua
+if [ "$1" = "progress" ]; then
+    set -a; . "$ROOT/.env"; set +a
+    exec luajit progress_integration.lua
+fi
+luajit harness.lua && luajit plugin_spec.lua && luajit spacecrypto_spec.lua && luajit anchor_spec.lua && luajit others_spec.lua && luajit popuplayout_spec.lua && luajit privacy_spec.lua && luajit notebutton_spec.lua && luajit club_spec.lua && luajit syncnotice_spec.lua && luajit clubprogress_spec.lua

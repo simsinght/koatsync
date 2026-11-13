@@ -28,6 +28,12 @@ Spoilers: nothing here lists other people's passages or notes. The popup only
 shows what is under the reader's finger on the page being read; everything
 else (the menu, the progress bar, notifications) is counts only.
 
+Where the others are (clubprogress.lua): after the first successful fetch of a
+book open, one quiet toast says it ("sam is on chapter 10 · andrea finished the
+book"), never again in that open and not at all when nobody has said; the menu
+lists it on demand, and a person's card shows theirs. Chapter numbers and
+percentages only, hidden people left out.
+
 @module koplugin.koatsync.othersreader
 ]]
 
@@ -42,6 +48,7 @@ local T = require("ffi/util").template
 
 local Anchor = require("anchor")
 local Club = require("club")
+local ClubProgress = require("clubprogress")
 local FixtureSource = require("fixturesource")
 local Others = require("others")
 local Store = require("store")
@@ -354,6 +361,7 @@ function OthersReader:fetchDone(stats, err)
     if stats then
         self.fetch_stats = stats
         self.fetch_error = nil
+        self:noticeProgress()
     else
         self.fetch_error = err
         logger.warn("koatsync: others' highlights refresh:", err and err.code, err and err.message)
@@ -362,6 +370,58 @@ function OthersReader:fetchDone(stats, err)
         end
     end
     self:load()
+end
+
+-- Where the others are -----------------------------------------------------------
+
+--- Others' progress for this book (cache only), without the people hidden in it.
+function OthersReader:othersProgress()
+    if not (self.plugin.othersProgress and self.ui.document) then return {} end
+    local hidden, out = self:hiddenSet(), {}
+    for _, p in ipairs(self.plugin:othersProgress()) do
+        if not hidden[p.did] then out[#out + 1] = p end
+    end
+    return out
+end
+
+--- The one toast per book open saying where the others are (nothing when nobody has said).
+function OthersReader:noticeProgress()
+    if self.progress_noticed then return end
+    self.progress_noticed = true
+    local text = ClubProgress.notice(self:othersProgress())
+    if text then self:toast(text) end
+end
+
+--- A quiet toast at the bottom (othersprogress.lua), above the progress bar if that is showing.
+function OthersReader:toast(text)
+    local OthersProgress = require("othersprogress")
+    local top = OthersProgress.topOf(self.progress)
+    local Size = require("ui/size")
+    return OthersProgress.toast(text, nil, top and (top + Size.padding.large) or nil)
+end
+
+--- A person's place in the book in a few words, for their card, or nil.
+function OthersReader:whereIs(person)
+    if not (person and person.did) then return nil end
+    for _, p in ipairs(self:othersProgress()) do
+        if p.did == person.did then return ClubProgress.short(p.value) end
+    end
+end
+
+function OthersReader:showWhereOthersAre()
+    local lines = ClubProgress.lines(self:othersProgress())
+    local link = self.plugin:linkFor()
+    local at = link and self.plugin:clubSource():refreshedAt(link.space)
+    local text
+    if #lines == 0 then
+        text = _("Nobody else has shared where they are in this book yet.")
+    else
+        for i, l in ipairs(lines) do lines[i] = "• " .. l end
+        text = _("Where the others are:") .. "\n" .. table.concat(lines, "\n")
+            .. "\n\n" .. _("Chapters are numbered as in each reader's own copy.")
+    end
+    if at then text = text .. "\n\n" .. T(_("Last fetched %1."), os.date("%Y-%m-%d %H:%M", at)) end
+    self.plugin:alert(text)
 end
 
 -- Progress bar ------------------------------------------------------------------
@@ -430,7 +490,7 @@ function OthersReader:onOthersTap(ges)
         passage = PopupLayout.extent(self.overlay:rectsFor(items)),
         line = line and PopupLayout.extent({ line }),
         tap = { x = pos.x, y = pos.y },
-    }, { hide = function(person) self:hide(person) end })
+    }, { hide = function(person) self:hide(person) end, where = function(person) return self:whereIs(person) end })
     return true
 end
 
@@ -592,6 +652,13 @@ function OthersReader.menu(plugin, reader)
                 help_text = _("People whose highlights you hid in this book (tap one of their highlights, then their name). Tap a name here to show them again."),
                 enabled_func = function() return reader ~= nil and next(reader:hiddenPeople()) ~= nil end,
                 sub_item_table_func = function() return hiddenItems() end,
+            },
+            {
+                text = _("Where the others are"),
+                help_text = _("How far each reader has got in this book: the chapter (as numbered in their own copy), how far through, or finished. No chapter titles, so nothing gives away what happens."),
+                enabled_func = function() return reader ~= nil and plugin:isLinkedBook() end,
+                keep_menu_open = true,
+                callback = function() reader:showWhereOthersAre() end,
             },
             {
                 text = _("Refresh from the club"),

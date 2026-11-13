@@ -415,6 +415,7 @@ hostSheet = function(plugin, club, o)
         for i, h in ipairs(o.guests) do g[i] = typedName(plugin, h) end
         parts[#parts + 1] = T(_("Guests from outside the club: %1"), table.concat(g, ", "))
     end
+    parts[#parts + 1] = _("Your highlights and notes in it, and where you are in the book, are shared with its readers.")
     parts[#parts + 1] = #choices > 0 and _("Who from the club reads it with you:")
         or _("Nobody else is in the club yet; you can add readers later.")
     local text = table.concat(parts, "\n\n")
@@ -677,6 +678,14 @@ end
 
 -- Flows: this book ---------------------------------------------------------------------
 
+--- "• sam: chapter 10 of 24 · 40%" lines for the open read-along book, hidden people left out (cache only).
+function ClubMenu.whereLines(plugin)
+    local hidden = plugin.others_reader and plugin.others_reader:hiddenSet() or nil
+    local out = {}
+    for i, l in ipairs(require("clubprogress").lines(plugin:othersProgress(), hidden)) do out[i] = "• " .. l end
+    return out
+end
+
 local function isHost(plugin)
     local l = plugin:isLinkedBook() and plugin:linkFor()
     return l and l.space:match("^ats?://([^/]+)/") == plugin.client.did or false
@@ -806,6 +815,8 @@ local function statusCard(plugin)
         lines[#lines + 1] = T(_("Still in your public repo: %1 (Book club → This book → Move…)."), st.public_records)
     end
     if st.others_refreshed_at then lines[#lines + 1] = T(_("Others' highlights fetched %1."), os.date("%Y-%m-%d %H:%M", st.others_refreshed_at)) end
+    local where = ClubMenu.whereLines(plugin)
+    if #where > 0 then lines[#lines + 1] = "\n" .. _("Where the others are:") .. "\n" .. table.concat(where, "\n") end
     plugin:alert(table.concat(lines, "\n"))
 end
 
@@ -851,7 +862,7 @@ local function thisBookItems(plugin)
                 local shared = st.space_records > 0
                     and T(_("• Your %1 shared highlights and notes are deleted from the club, so the others stop seeing them."), st.space_records)
                     or _("• You haven't shared anything here yet, so nothing needs deleting.")
-                confirm(T(_("Leave %1 for “%2”?\n\n%3\n• Your highlights and notes on this device stay exactly as they are.\n• Others' highlights disappear from your pages.\n• The book is not sent to your public repo unless you turn that back on (Book club → This book)."),
+                confirm(T(_("Leave %1 for “%2”?\n\n%3\n• Where you are in the book stops being shared.\n• Your highlights and notes on this device stay exactly as they are.\n• Others' highlights disappear from your pages.\n• The book is not sent to your public repo unless you turn that back on (Book club → This book)."),
                     name, st.link.title or "?", shared),
                     _("Leave"), function()
                         run(plugin, {

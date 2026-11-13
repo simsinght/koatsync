@@ -123,6 +123,10 @@ progress sync stores its password. Use an app password, never your account passw
 - **Bulk backfill**: enable **koatsync (PDS)** under **Tools → Export highlights → Choose formats**,
   then export from the file browser to push many books at once.
 
+The automatic, on-close and on-connect syncs are quiet: nothing is shown when they work, and a
+failure only when it is news (a new kind of failure at once, the same kind again at most once a
+day; a successful sync resets that). The manual syncs and the export target report every outcome.
+
 ## ZenOS
 
 The plugin follows what [ZenOS](https://github.com/xZenLabs/zen-os) looks for:
@@ -159,6 +163,12 @@ handle (the server part is dropped when it is your own).
   by default). The toggle is also a dispatcher action, `koatsync: show/hide others' highlights`.
 - Spoilers: nothing lists other people's passages or notes. The popup only shows what is under your
   finger on the page you are reading; everything else is counts.
+- **Where the others are** (read-along books only): once others' data has been fetched on opening
+  the book, a small toast at the bottom says it once, for example "Chloé Durand finished the book ·
+  Alice Moreau and Ben Okafor are on chapter 10" (chapter numbers as in each reader's own copy; a
+  percentage for a copy without a table of contents; never chapter titles). People you hid are left
+  out, and nothing is shown when nobody has shared. **Others' highlights → Where the others are**
+  lists it on demand, so does **Book club → Reading along**, and a person's card shows theirs.
 - In a book that reads along with a club (below) they come from the book's space, cached on the
   device so the overlay works offline with the last fetched state. They are refreshed when the book
   opens with Wi-Fi already on, after each sync, and from **Others' highlights → Refresh from the club**.
@@ -179,8 +189,8 @@ For a member:
   is enough: `sam` becomes `sam.<your server>`). It works once the owner has added you; until then
   the message says so and offers **Try again**.
 - When you open a book on the club's list (same ISBN, or the same title and author surname, so other
-  editions count), koatsync asks "Read along with <club>?", saying where your highlights will go and
-  that the ones you already made are shared too. **Not now** asks again next time you open the book;
+  editions count), koatsync asks "Read along with <club>?", saying where your highlights will go,
+  that where you are in the book is shared too, and that the highlights you already made are shared. **Not now** asks again next time you open the book;
   **Not this book** stops asking for that file. **Read along with a club book** does the same by hand
   (it also has **Join a book by its host's name…** for a guest).
 - **Reading along: <club>** shows where the book stands. **This book → Leave this read-along…**
@@ -198,7 +208,10 @@ For whoever runs the club or hosts a book:
   readers…**, and **Delete this book's read-along for everyone…**; **<club> → Delete this club for
   everyone…** removes the club. Each destructive step says exactly what goes and what stays.
 - In a linked book your shared highlights and notes go to your own repo inside the book's space, not
-  your public repo. "Save private" ones never leave the device. If the book was mirrored publicly
+  your public repo. So does one small record of where you are in it (chapter number, percentage,
+  finished or not), sent only along with a sync that is happening anyway (a few seconds after a
+  highlight, on closing the book with Wi-Fi on, when Wi-Fi connects) and only when it moved: a new
+  chapter, finishing, or 5% further. Leaving the read-along deletes it. "Save private" ones never leave the device. If the book was mirrored publicly
   before, **This book → Move public highlights into the club…** deletes the public copies once the
   club has them; until then the public copy gets edits and deletions but nothing new.
 
@@ -227,7 +240,9 @@ Clubs (see `club.lua` for the full picture):
 - `at.stim.reading.clubBook`: title, authors, identifiers, the book space's URI and the club's. The
   host writes it into the club space (rkey = the book space's key) and into the book space (rkey `self`).
 - Inside a book space every reader writes the same `at.stim.reading.book` and
-  `at.stim.reading.highlight` records as in a public repo, into their own repo there.
+  `at.stim.reading.highlight` records as in a public repo, into their own repo there, plus one
+  `at.stim.reading.progress` record (rkey `self`): percent, chapter `{ index, count }` from their own
+  TOC (absent without one), finished, updatedAt. No chapter titles. Never written to a public repo.
 - On the device: clubs (with their last member list), known books, links (keyed by the file's
   partial MD5), declined offers and display names in `settings/koatsync.lua`; per book, people hidden
   in it under `hidden_people` in the sidecar's `koatsync` table, the public ledger stays at the top of the
@@ -248,6 +263,7 @@ koatsync.koplugin/spec/run.sh              # unit + stubbed plugin scenarios
 koatsync.koplugin/spec/run.sh integration  # live round trip against the PDS in .env
 koatsync.koplugin/spec/run.sh spaces       # live permissioned-spaces round trip (two accounts)
 koatsync.koplugin/spec/run.sh club         # live book-club story (three accounts)
+koatsync.koplugin/spec/run.sh progress     # live: two readers exchange progress records (two accounts)
 KOREADER=/Applications/KOReader.app/Contents/koreader koatsync.koplugin/spec/run.sh [spaces|club]
                                            # crypto spec (or a live run) on KOReader's own luajit and libcrypto
 ```
@@ -263,6 +279,8 @@ The club run needs all three accounts. It creates the `koatsync spec club` club 
 (join, host, discover, link, highlights both ways with verification, private notes, public-to-club
 move, guest, leave, removal, outsiders refused), deletes every record and then both spaces. It
 never writes to the first account's public repo.
+The progress run needs the first two accounts; it creates the `koatsync-spec-progress` book space
+under the first, writes and reads progress records both ways, and deletes them and the space.
 `spacecrypto.lua` loads libcrypto through FFI; set `KOATSYNC_LIBCRYPTO` to a path to override the search.
 
 `dev/koreader.sh <profile> [book]` runs the macOS KOReader build on a throwaway profile; with
@@ -285,12 +303,16 @@ Module map:
 - `others.lua`: places other readers' highlights for a book, with a per-file cache.
 - `club.lua`: clubs, the pure part (slugs, book matching, record builders, rosters, listing diffs).
 - `clubs.lua`: clubs over spaces (create/join, members, host/join books, links to local files).
-- `clubsource.lua`: others' highlights from a book space, verified and cached on disk.
+- `clubsource.lua`: others' highlights (and where they are in the book) from a book space, verified
+  and cached on disk.
+- `clubprogress.lua`: where each reader is in a read-along book, the pure part (the progress record,
+  when it is worth sending, the spoiler-free wording).
 - `clubmenu.lua`: the Book club menu and its screens (join, host, members, readers, leave, delete).
 - `fixturesource.lua`: others' highlights from a JSON file per book (dev fallback).
 - `overlay.lua`: draws others' highlights as a reader view module.
 - `othersreader.lua`: others' highlights in the reader (background fetching and placing, hiding people,
   taps, menu, the optional status-bar cue).
-- `othersprogress.lua`: the dismissable progress bar for that background work.
+- `othersprogress.lua`: the dismissable progress bar for that background work, and the same quiet
+  toast for a line of text (where the others are).
 - `otherspopup.lua`, `popuplayout.lua`: the tap popup, and its pure row/placement logic.
 - `main.lua`: menus, dispatcher actions, events, ZenOS hooks.

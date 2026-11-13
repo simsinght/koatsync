@@ -1,0 +1,33 @@
+{
+  "lexicon": 1,
+  "id": "at.stim.reading.progress",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "literal:self",
+      "description": "Where one reader is in a book read along with others: one per reader in their own repo inside the book's space (type at.stim.reading.readAlong), never in a public repo. Spoiler-free on purpose: a chapter number and a percentage, no chapter titles or text.",
+      "record": {
+        "type": "object",
+        "required": ["percent", "finished", "updatedAt"],
+        "properties": {
+          "percent": { "type": "integer", "minimum": 0, "maximum": 100, "description": "How far through the reader's own copy, rounded down." },
+          "chapter": {
+            "type": "ref",
+            "ref": "#chapter",
+            "description": "The chapter the reader is in, counted in their own copy's table of contents. Absent when the copy has none (often a PDF)."
+          },
+          "finished": { "type": "boolean", "description": "Marked as finished in the reader, or on the last page." },
+          "updatedAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    },
+    "chapter": {
+      "type": "object",
+      "required": ["index"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1, "description": "1-based position in the table of contents." },
+        "count": { "type": "integer", "minimum": 1, "description": "Chapters in that table of contents." }
+      }
+    }
+  }
+}

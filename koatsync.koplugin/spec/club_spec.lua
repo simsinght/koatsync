@@ -201,7 +201,12 @@ do
     world.calls = {}
     local st, serr = src:refresh(space)
     local gets = 0
-    for _, c in ipairs(world.calls) do if c:find("credGetRecord") then gets = gets + 1 end end
+    local pgets = 0
+    for _, c in ipairs(world.calls) do
+        if c:find("credGetRecord at.stim.reading.progress", 1, true) then pgets = pgets + 1
+        elseif c:find("credGetRecord") then gets = gets + 1 end
+    end
+    check("first refresh reads each changed writer's progress once", pgets == 1, pgets)
     check("first refresh verifies every record of other writers", st and st.verified == 3 and gets == 3 and st.writers == 1, serr and serr.message)
     local entries = src:fetch{ space = space }
     local texts = {}
@@ -224,7 +229,7 @@ do
     world.calls = {}
     st = src:refresh(space)
     gets = 0
-    for _, c in ipairs(world.calls) do if c:find("credGetRecord") then gets = gets + 1 end end
+    for _, c in ipairs(world.calls) do if c:find("credGetRecord") and not c:find("progress", 1, true) then gets = gets + 1 end end
     check("only the changed record is verified", st.verified == 1 and gets == 1 and st.kept == 2, st.verified .. "/" .. st.kept)
     -- a forged listing entry (no valid MAC) is never shown
     put(msp, space, "real text", "h3")
@@ -259,6 +264,54 @@ do
     check("outsider cannot read the book space", xst == nil and xerr.error == "SpaceNotFound")
 end
 
+-- clubsource: where the others are (progress records) --------------------------------------
+do
+    local P = require("clubprogress")
+    local space = hosted.space
+    local caches = {}
+    local src = ClubSource.new{ spaces = osp, own_did = function() return "did:plc:owner" end,
+        cache = function(s) caches[s] = caches[s] or memSettings(); return caches[s] end,
+        person = function(did) return { did = did, handle = world.people[did] } end }
+    local function progressCalls()
+        local n = 0
+        for _, c in ipairs(world.calls) do if c:find(P.NSID, 1, true) then n = n + 1 end end
+        return n
+    end
+    check("nothing before a refresh", #src:progress(space) == 0)
+    msp:putRecord(space, P.NSID, P.RKEY, P.record({ percent = 42, chapter = { index = 10, count = 24 }, finished = false }, "2026-11-12T10:00:00Z"))
+    osp:putRecord(space, P.NSID, P.RKEY, P.record({ percent = 5, finished = false }))
+    world.calls = {}
+    local st, serr = src:refresh(space)
+    local prog = src:progress(space)
+    check("progress read with the same refresh, verified", st and st.progress == 1 and progressCalls() == 1 and #prog == 1
+        and prog[1].did == "did:plc:member" and prog[1].value.chapter.index == 10, serr and serr.message)
+    check("progress entry names its author; own record never included", prog[1] and prog[1].author.handle == "member.pds.test")
+    world.calls = {}
+    src:refresh(space)
+    check("unchanged writer: progress not read again", progressCalls() == 0)
+    msp:putRecord(space, P.NSID, P.RKEY, P.record({ percent = 100, finished = true }))
+    src:refresh(space)
+    check("moved on: new record read", src:progress(space)[1].value.finished == true)
+    world.tampered[Spaces.recordUri(space, "did:plc:member", P.NSID, P.RKEY)] = { percent = 1, finished = false }
+    msp:putRecord(space, P.NSID, P.RKEY, P.record({ percent = 50, finished = false }))
+    st = src:refresh(space)
+    check("unverifiable progress: the last verified one stays", st and st.rejected >= 1 and src:progress(space)[1].value.finished == true)
+    world.tampered = {}
+    msp:deleteRecord(space, P.NSID, P.RKEY)
+    st = src:refresh(space)
+    check("deleted progress forgotten, refresh fine", st and #src:progress(space) == 0)
+    check("highlights unaffected by progress", #src:fetch{ space = space } > 0)
+end
+
+-- the owner joining their own club (e.g. on a second device) gets its books, so the read-along offer follows
+do
+    local owner2, _sp, ostore2 = account("did:plc:owner", "owner.pds.test")
+    local c, cerr = owner2:join("owner", "Thursday Readers")
+    check("owner joins own club", c and c.role == "owner", cerr and cerr.message)
+    check("owner's join loads the club's books", c and #(c.books or {}) == 1 and c.books_at ~= nil, c and #(c.books or {}))
+    check("and the offer can match", #owner2:matchesFor(Club.localMeta({ title = "Pride and Prejudice", authors = "Jane Austen" }), "md5-x") == 1)
+    check("stored", ostore2:club(c.uri).books[1].title == "Pride and Prejudice")
+end
 
 -- labels: display name, else a short handle, never a DID ------------------------------
 do

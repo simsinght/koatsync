@@ -8,6 +8,11 @@ It is a toast: it never takes input away from the book. Any tap or swipe
 dismisses it and still reaches the reader (so the page turns as usual), and
 the work carries on; the Others' highlights menu shows how far it got.
 
+`OthersProgress.toast` shows a line of text the same way, without a bar, that
+goes away by itself after a few seconds; it wraps onto more lines where
+KOReader's one-line Notification would cut it off (where the others are in the
+book, said once on opening it).
+
 @module koplugin.koatsync.othersprogress
 ]]
 
@@ -19,6 +24,7 @@ local Geom = require("ui/geometry")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local ProgressWidget = require("ui/widget/progresswidget")
 local Size = require("ui/size")
+local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
@@ -30,6 +36,7 @@ local Progress = InputContainer:extend{
     text = "",
     fraction = nil, -- 0..1, or nil for none
     bottom = nil,   -- distance from the screen's bottom edge (default: clear of a footer)
+    wrap = false,   -- wrap long text onto more lines instead of cutting it
 }
 
 function Progress:init()
@@ -42,6 +49,15 @@ function Progress:build()
     local face = Font:getFace("cfont", 16)
     local max_w = math.floor(sw * 0.8)
     local label = TextWidget:new{ text = self.text, face = face, max_width = max_w - 2 * pad }
+    if self.wrap then
+        local probe = TextWidget:new{ text = self.text, face = face }
+        local too_wide = probe:getSize().w > max_w - 2 * pad
+        probe:free()
+        if too_wide then
+            label:free()
+            label = TextBoxWidget:new{ text = self.text, face = face, width = max_w - 2 * pad }
+        end
+    end
     local w = math.max(label:getSize().w, Screen:scaleBySize(180))
     local group = VerticalGroup:new{ align = "left", label }
     if self.fraction then
@@ -89,6 +105,7 @@ end
 
 function Progress:onCloseWidget()
     self.closed = true
+    if self.timeout_fn then UIManager:unschedule(self.timeout_fn) end
     local dimen = self.dimen
     UIManager:setDirty(nil, function() return "ui", dimen end)
 end
@@ -115,6 +132,21 @@ function OthersProgress.show(text, fraction, bottom)
     local p = Progress:new{ text = text, fraction = fraction, bottom = bottom }
     UIManager:show(p)
     return p
+end
+
+--- A quiet line of text at the bottom, gone after `seconds` (default 8) or at the first tap.
+function OthersProgress.toast(text, seconds, bottom)
+    local p = Progress:new{ text = text, bottom = bottom, wrap = true }
+    UIManager:show(p)
+    p.timeout_fn = function() OthersProgress.close(p) end
+    UIManager:scheduleIn(seconds or 8, p.timeout_fn)
+    return p
+end
+
+--- The top edge of a shown bar, as a distance from the screen's bottom (to stack a toast above it), or nil.
+function OthersProgress.topOf(p)
+    if not (p and not p.closed and p.dimen) then return nil end
+    return Screen:getHeight() - p.dimen.y
 end
 
 function OthersProgress.close(p)

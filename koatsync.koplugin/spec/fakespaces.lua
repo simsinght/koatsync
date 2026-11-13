@@ -165,7 +165,7 @@ function World:as(did, handle)
         return res
     end
     function S:credGetRecord(uri, who, coll, rkey)
-        count("credGetRecord")
+        count("credGetRecord " .. coll)
         if world.offline then return nil, { message = "offline" } end
         if not canRead(space(uri)) then return nf() end
         local ruri = Spaces.recordUri(uri, who, coll, rkey)

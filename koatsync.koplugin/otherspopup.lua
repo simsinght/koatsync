@@ -9,8 +9,9 @@ rounded, a thin border, cells split by thin grey rules.
 * Someone did: a short list, one row per person, the note under the name.
   A long note is cut after a few lines (a chevron says so).
 * Tapping a person (a name in the bar, a row in the list) turns the popup into
-  that person's card, in the same place: their whole note if they wrote one,
-  and "Hide in this book", which hides everything of theirs in this book at
+  that person's card, in the same place: where they are in the book (a chapter
+  number or a percentage, if they shared it), their whole note if they wrote
+  one, and "Hide in this book", which hides everything of theirs in this book at
   once (decided right there; the list to bring people back is in the menu).
 
 Everything is built from stock KOReader widgets and sizes; ZenOS restyles
@@ -131,7 +132,7 @@ local Popup = InputContainer:extend{
     rows = nil,     -- from PopupLayout.rows
     anchor = nil,   -- { passage, line, tap } in screen coordinates; nil centres
     full_row = nil, -- show this row's card (whole note, actions) instead
-    actions = nil,  -- { hide = function(person) } (optional)
+    actions = nil,  -- { hide = function(person), where = function(person) -> text|nil } (optional)
 }
 
 Popup.TEXT = { hide = _("Hide in this book") }
@@ -294,19 +295,38 @@ function Popup:actionCell(width)
     return frame
 end
 
+--- Where the person is in the book ("on chapter 10"), under their name on the card; nil if unknown.
+function Popup:whereLine(row, max_w)
+    local where = self.actions and type(self.actions.where) == "function" and self.actions.where(row.person)
+    if type(where) ~= "string" or where == "" then return nil end
+    local m = metrics()
+    return HorizontalGroup:new{
+        HorizontalSpan:new{ width = m.marker_w + m.gap },
+        TextWidget:new{ text = where, face = m.note_face, fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+            max_width = math.max(1, max_w - m.marker_w - m.gap) },
+    }
+end
+
 --[[--
-A person's card: their name and, if they wrote one, their whole note, then
-"Hide in this book". Without a note it is a single bar: name | action.
+A person's card: their name (with where they are in the book, when known) and,
+if they wrote one, their whole note, then "Hide in this book". Without a note
+it is a single bar: name | action.
 ]]
 function Popup:buildCard(row)
     local m = metrics()
     if not self:canHide() then return self:buildFull(row) end
     if #row.notes == 0 then
+        local name_w = math.floor(self.max_w / 2)
+        local head = nameLine(self.overlay, row, name_w)
+        local where = self:whereLine(row, name_w)
+        if where then
+            head = VerticalGroup:new{ align = "left", head, VerticalSpan:new{ width = Size.padding.small }, where }
+        end
         local name = FrameContainer:new{
             bordersize = 0, padding = 0,
             padding_left = m.pad_h + m.pad_h / 2, padding_right = m.pad_h + m.pad_h / 2,
             padding_top = m.pad_v, padding_bottom = m.pad_v,
-            nameLine(self.overlay, row, math.floor(self.max_w / 2)),
+            head,
         }
         local action = self:actionCell()
         local h = math.max(name:getSize().h, action:getSize().h)
@@ -336,13 +356,14 @@ function Popup:buildFull(row)
         note = ScrollTextWidget:new{ text = text, face = m.note_face, width = inner - indent,
             height = math.floor(max_h / line_h) * line_h, dialog = self }
     end
+    local group = VerticalGroup:new{ align = "left", nameLine(self.overlay, row, inner) }
+    local where = self.full_row and self:whereLine(row, inner)
+    if where then group[#group + 1] = where end
+    group[#group + 1] = VerticalSpan:new{ width = Size.padding.small }
+    group[#group + 1] = HorizontalGroup:new{ HorizontalSpan:new{ width = indent }, note }
     return FrameContainer:new{
         bordersize = 0, padding = m.pad_h, padding_top = m.pad_v, padding_bottom = m.pad_v,
-        VerticalGroup:new{ align = "left",
-            nameLine(self.overlay, row, inner),
-            VerticalSpan:new{ width = Size.padding.small },
-            HorizontalGroup:new{ HorizontalSpan:new{ width = indent }, note },
-        },
+        group,
     }
 end
 

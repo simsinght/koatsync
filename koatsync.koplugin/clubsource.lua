@@ -16,13 +16,15 @@ spaces.lua). A refresh:
    whose repoRev is unchanged since the last complete refresh is skipped;
 2. for the others, lists their book and highlight records (one request per
    collection per 100 records);
-3. fetches with a MAC only records whose URI is new or whose CID changed;
+3. reads their progress record (where they are in the book, clubprogress.lua;
+   fixed rkey, so one getRecord with a MAC and no listing);
+4. fetches with a MAC only records whose URI is new or whose CID changed;
    records whose CID matches a verified cached copy are kept as they are;
-4. drops records that are no longer listed, and writers who are gone.
+5. drops records that are no longer listed, and writers who are gone.
 
 So a book open with nothing new costs a credential (two requests, cached for
-ten minutes) plus one listRepos; with changes, 2 lists per changed writer plus
-one getRecord per new or edited record. Key shares are reused per author
+ten minutes) plus one listRepos; with changes, 2 lists and a progress read per
+changed writer plus one getRecord per new or edited record. Key shares are reused per author
 (Spaces:kemShare), so a verified read costs no key generation on the device.
 A record that fails verification is not shown and is retried next time.
 
@@ -30,12 +32,14 @@ Cache per book space (LuaSettings, `cache/koatsync/space-<hash>.lua`):
 
     { version, space, refreshed_at, writers = { [did] = { repoRev, complete,
       books = { [uri] = { cid, value, verified } },
-      highlights = { [uri] = { cid, value, verified } } } } }
+      highlights = { [uri] = { cid, value, verified } },
+      progress = { cid, value, verified }? } } }
 
 @module koplugin.koatsync.clubsource
 ]]
 
 local Club = require("club")
+local ClubProgress = require("clubprogress")
 local Records = require("records")
 local Spaces = require("spaces")
 
@@ -207,6 +211,10 @@ function ClubSource:doRefresh(space, stats, opts)
                     -- Until this writer is done, the cache must not look complete.
                     w.complete = false
                     for _, plan in ipairs(plans) do w[plan.coll.key] = plan.fresh end
+                    -- Where they are in the book: one small record, read first so
+                    -- it is there even if the highlights take a while.
+                    err_out = self:refreshProgress(space, r.did, w, stats)
+                    if err_out then complete = false end
                 end
                 for _, plan in ipairs(err_out and {} or plans) do
                     local coll, fresh = plan.coll, plan.fresh
@@ -247,6 +255,56 @@ function ClubSource:doRefresh(space, stats, opts)
     cache:flush()
     if err_out then return nil, err_out end
     return true
+end
+
+--[[--
+Reads one writer's progress record (clubprogress.lua) into `w.progress`, with a
+record MAC like everything else shown. One request per changed writer; the
+rkey is fixed, so there is nothing to list. No record: `w.progress` is
+cleared. A record that fails verification keeps whatever was cached. Only a
+network failure is returned (the refresh stops there); anything else about
+progress never fails a refresh.
+]]
+function ClubSource:refreshProgress(space, did, w, stats)
+    local got, err = self.spaces:credGetRecord(space, did, ClubProgress.NSID, ClubProgress.RKEY)
+    if got and type(got.value) == "table" then
+        w.progress = { cid = got.cid, value = got.value, verified = true }
+        stats.progress = (stats.progress or 0) + 1
+        return nil
+    end
+    if type(err) == "table" and err.status == nil and not err.error then return err end
+    local code = type(err) == "table" and tostring(err.error or "") or ""
+    if code == "BadSpaceMac" or code == "BadCid" then
+        stats.rejected = stats.rejected + 1
+    else
+        w.progress = nil -- not there (RecordNotFound) or not readable: say nothing about them
+    end
+    return nil
+end
+
+--[[--
+Others' progress records from the cache (no network), for the notice and the
+list: `{ { did, author = { did, handle, displayName }, value } }`, sorted by DID.
+The reader's own is never included.
+]]
+function ClubSource:progress(space)
+    if not space then return {} end
+    local _, writers = load(self, space)
+    local me = self.own_did and self.own_did()
+    local dids = {}
+    for did, w in pairs(writers) do
+        if did ~= me and type(w.progress) == "table" and w.progress.verified and type(w.progress.value) == "table" then
+            dids[#dids + 1] = did
+        end
+    end
+    table.sort(dids)
+    local out = {}
+    for _, did in ipairs(dids) do
+        local p = self.person and self.person(did, true) or { did = did }
+        out[#out + 1] = { did = did, author = { did = did, handle = p.handle, displayName = p.displayName },
+            value = writers[did].progress.value }
+    end
+    return out
 end
 
 --- When the cache for `space` was last refreshed (os.time), or nil.

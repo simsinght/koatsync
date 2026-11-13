@@ -267,5 +267,149 @@ do
     check("public mirror back on: shared ones sent", S.countRepo("at.stim.reading.highlight") == 2)
 end
 
+-- 9. syncs nobody asked for are quiet: closing a book, Wi-Fi connecting (manual ones still report)
+S.reset()
+do
+    local ann = { hl("x", "2026-01-01 10:00:00") }
+    local ui = S.newReaderUI("/b/a.epub", ann)
+    local p = signedInPlugin(ui)
+    local t = 2000000
+    p.now = function() return t end
+    p.store:set("auto_sync", false)
+    p:onAnnotationsModified()
+    p:onCloseDocument()
+    check("close: synced", S.countRepo("at.stim.reading.highlight") == 1)
+    check("close: no banner on success", #S.notifications == 0, table.concat(S.notifications, " / "))
+    ann[1].note = "n1"
+    S.offline = { status = 502, message = "Bad Gateway" }
+    p:onAnnotationsModified(); p:onCloseDocument()
+    check("close: a new kind of failure is shown once", #S.notifications == 1 and S.notifications[1]:find("having trouble", 1, true), table.concat(S.notifications, " / "))
+    t = t + 60; p:onAnnotationsModified(); p:onCloseDocument()
+    check("close: same failure again is quiet", #S.notifications == 1)
+    check("close: failed book stays dirty", #p.store:dirtyFiles() == 1)
+    -- Wi-Fi connects: same rule
+    t = t + 60; p:onNetworkConnected(); S.runTasks()
+    check("connect: same kind still quiet", #S.notifications == 1)
+    S.offline = { status = 401, error = "AuthenticationRequired", message = "x" }
+    t = t + 60; p:onNetworkConnected(); S.runTasks()
+    check("connect: new kind shown, by its own kind", #S.notifications == 2 and S.notifications[2]:find("sign in again", 1, true), S.notifications[2])
+    S.offline = false
+    p:onNetworkConnected(); S.runTasks()
+    check("connect: success is quiet and resets", #S.notifications == 2 and #p.store:dirtyFiles() == 0 and p.store:get("auto_sync_notice") == nil)
+    ann[1].note = "n2"
+    p:onAnnotationsModified()
+    p:onKoatsyncSyncAll()
+    check("manual sync of pending books still reports", #S.notifications == 3 and S.notifications[3]:find("1 updated", 1, true), S.notifications[3])
+end
+
+-- 10. where the reader is, in a read-along book: written into the book space only, when it moved enough
+S.reset()
+do
+    local World = require("fakespaces")
+    local P = require("clubprogress")
+    local world = World.new()
+    local host = world:as("did:plc:host", "host.test")
+    local space = host:ensureSpace("at.stim.reading.readAlong", "dune")
+    host:putMember(space, "did:plc:fake", true, true)
+    local ann = { hl("a", "2026-01-01 10:00:00") }
+    local ui = S.newReaderUI("/b/dune.epub", ann)
+    local toc = {}
+    for i = 1, 20 do toc[i] = { depth = 1, page = (i - 1) * 20 + 1, title = "Chapter " .. i } end
+    local page = 30 -- chapter 2 of 20, 7%
+    ui.getCurrentPage = function() return page end
+    ui.toc = { toc = toc, fillToc = function() end }
+    local p = signedInPlugin(ui)
+    local view = world:as("did:plc:fake", "me.example")
+    view.client = p.client
+    p.spaces = view
+    check("disclosure: the read-along question says position is shared",
+        p:readAlongText({ title = "Dune" }, "Club"):find("so is where you are in the book: which chapter, how far through, and when you finish", 1, true) ~= nil)
+    p:onAnnotationsModified(); S.runTasks()
+    check("unlinked book: no progress anywhere", S.countRepo(P.NSID) == 0 and world.spaces[space].repos["did:plc:fake"] == nil)
+    p:clubLink({ space = space, title = "Dune", host = "did:plc:host" })
+    local function rec()
+        local r = world.spaces[space].repos["did:plc:fake"]
+        return r and r.colls[P.NSID] and r.colls[P.NSID][P.RKEY]
+    end
+    local r1 = rec()
+    check("linking sends progress with the highlights", r1 and r1.value.chapter.index == 2 and r1.value.chapter.count == 20
+        and r1.value.percent == 7 and r1.value.finished == false, r1 and r1.value.percent)
+    check("never in the public repo", S.countRepo(P.NSID) == 0)
+    page = 35; ann[1].note = "edited"
+    p:onAnnotationsModified(); S.runTasks()
+    check("a few pages on: not rewritten", rec().cid == r1.cid)
+    page = 45 -- chapter 3
+    ann[1].note = "edited again"
+    p:onAnnotationsModified(); S.runTasks()
+    local r2 = rec()
+    check("next chapter: rewritten with the settle sync", r2.cid ~= r1.cid and r2.value.chapter.index == 3)
+    -- closing with nothing to sync still sends it (Wi-Fi already on), quietly
+    page = 70
+    p:onCloseDocument()
+    check("close: progress sent without a highlight sync", rec().value.chapter.index == 4 and #S.notifications == 0
+        and #p.store:dirtyFiles() == 0, #S.notifications)
+    -- Wi-Fi off at close: noted, goes with the next sync
+    S.wifi_on = false
+    page = 90
+    p:onCloseDocument()
+    local d = Store.bookState(ui.doc_settings).spaces[space]
+    check("close offline: noted, not sent", d.progress_now and d.progress_now.chapter.index == 5 and rec().value.chapter.index == 4)
+    S.wifi_on = true
+    ann[1].note = "third edit"
+    p:onAnnotationsModified(); S.runTasks()
+    check("next sync sends it", rec().value.chapter.index == 5 and d.progress_now == nil)
+    -- a failed progress write never fails or dirties the highlight sync
+    local put = view.putRecord
+    view.putRecord = function(self, sp, coll, ...)
+        if coll == P.NSID then return nil, { status = 500, message = "boom" } end
+        return put(self, sp, coll, ...)
+    end
+    page = 130; ann[1].note = "fourth edit"
+    p:onAnnotationsModified(); S.runTasks()
+    local h = world.spaces[space].repos["did:plc:fake"].colls["at.stim.reading.highlight"]
+    local note
+    for _, x in pairs(h) do note = x.value.note end
+    check("progress failure: highlight still synced, book clean, nothing shown", note == "fourth edit" and #p.store:dirtyFiles() == 0
+        and #S.notifications == 0 and rec().value.chapter.index == 5)
+    check("progress failure: kept for next time", Store.bookState(ui.doc_settings).spaces[space].progress_now.chapter.index == 7)
+    view.putRecord = put
+    p:onCloseDocument()
+    check("then sent", rec().value.chapter.index == 7)
+    -- finishing
+    ui.doc_settings.data.summary = { status = "complete" }
+    p:onCloseDocument()
+    check("marked finished: sent", rec().value.finished == true)
+    -- the toast on opening, from what was fetched (others' cached records)
+    local OthersReader = require("othersreader")
+    local reader = setmetatable({ plugin = p, ui = ui, store = p.store }, { __index = OthersReader })
+    reader.toast = function(_, t) S.notifications[#S.notifications + 1] = t end
+    local fake = { { did = "did:plc:sam", label = "sam", value = { percent = 40, chapter = { index = 10, count = 24 }, finished = false } },
+        { did = "did:plc:andrea", label = "andrea", value = { percent = 100, finished = true } } }
+    p.othersProgress = function() return fake end
+    local before = #S.notifications
+    reader:noticeProgress()
+    check("open notice", #S.notifications == before + 1 and S.notifications[#S.notifications] == "andrea finished the book · sam is on chapter 10",
+        S.notifications[#S.notifications])
+    reader:noticeProgress()
+    check("open notice: once per open", #S.notifications == before + 1)
+    local state = Store.bookState(ui.doc_settings)
+    state.hidden_people = { ["did:plc:andrea"] = { label = "andrea" } }
+    local reader2 = setmetatable({ plugin = p, ui = ui, store = p.store }, { __index = OthersReader })
+    reader2.toast = function(_, t) S.notifications[#S.notifications + 1] = t end
+    reader2:noticeProgress()
+    check("open notice: hidden people left out", S.notifications[#S.notifications] == "sam is on chapter 10")
+    check("card: where they are", reader2:whereIs({ did = "did:plc:sam" }) == "on chapter 10" and reader2:whereIs({ did = "did:plc:andrea" }) == nil)
+    fake = {}
+    local reader3 = setmetatable({ plugin = p, ui = ui, store = p.store }, { __index = OthersReader })
+    reader3.toast = function(_, t) S.notifications[#S.notifications + 1] = t end
+    local n = #S.notifications
+    reader3:noticeProgress()
+    check("open notice: nothing to say, nothing shown", #S.notifications == n)
+    p.othersProgress = nil
+    -- leaving deletes it
+    p:clubLeave()
+    check("leave deletes the progress record", rec() == nil)
+end
+
 print(string.format("%d passed, %d failed", passed, failed))
 os.exit(failed == 0 and 0 or 1)

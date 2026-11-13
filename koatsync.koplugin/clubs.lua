@@ -230,7 +230,11 @@ function Clubs:join(owner_input, name)
     if owner == self:me() then
         local info, gerr = self.spaces:getSpace(uri)
         if not info then return nil, Clubs.explain(gerr, "Your club “" .. name .. "”") end
-        return self:create(name)
+        local club, cerr = self:create(name)
+        if not club then return nil, cerr end
+        -- Its books, so the read-along offer can follow (best effort, as below).
+        self:books(uri, true)
+        return self.store:club(uri)
     end
     local _, cerr = self.spaces:credential(uri, true)
     if cerr then
