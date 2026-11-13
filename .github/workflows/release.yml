@@ -1,22 +1,39 @@
 # On a version tag (v0.2.0, ...), builds the plugin zip and a ZenPM source manifest
-# with dev/package.sh and attaches both to a GitHub release for that tag.
+# with dev/package.sh and attaches both to a GitHub release for that tag. The release
+# notes are that version's section of CHANGELOG.md (dev/release-notes.sh).
 #
-# The tag must be "v" + the X.Y.Z version in koatsync.koplugin/_meta.lua; the job
-# fails otherwise, before anything is published.
+# The tag must be "v" + the X.Y.Z version in koatsync.koplugin/_meta.lua, and
+# CHANGELOG.md must have a "## vX.Y.Z" section for it; the job fails otherwise,
+# before anything is published.
+#
+# Run by hand (Actions -> Release -> Run workflow), it rewrites the notes of releases
+# that already exist from CHANGELOG.md on the chosen branch, and touches nothing else:
+# no assets, titles or tags. "tags" is a space-separated list, or "all" for every
+# version in CHANGELOG.md that has a release.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Releases whose notes to rewrite from CHANGELOG.md ("all", or e.g. "v0.3.3 v0.3.4")'
+        required: true
+        default: all
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Release notes from CHANGELOG.md
+        run: sh dev/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
 
       - name: Build release files
         env:
@@ -26,11 +43,39 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -eu
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/koatsync.koplugin.zip dist/manifest.json --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           else
             gh release create "$GITHUB_REF_NAME" dist/koatsync.koplugin.zip dist/manifest.json \
-              --title "koatsync $GITHUB_REF_NAME" --generate-notes --verify-tag
+              --title "koatsync $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
           fi
+
+  notes:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rewrite release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euf
+          if [ "$TAGS" = all ]; then
+            TAGS=$(sh dev/release-notes.sh --list)
+          fi
+          for tag in $TAGS; do
+            sh dev/release-notes.sh "$tag" > "$RUNNER_TEMP/notes.md"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release edit "$tag" --notes-file "$RUNNER_TEMP/notes.md"
+              echo "rewrote the notes of $tag"
+            else
+              echo "::notice::$tag has no release yet; skipped"
+            fi
+          done

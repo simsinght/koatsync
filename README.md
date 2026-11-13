@@ -51,6 +51,11 @@ atproto spaces alpha.
 
 Looks best with [ZenOS](https://github.com/xZenLabs/zen-os). Works without it.
 
+### Changelog
+
+What changed in each release, with screenshots where it helps: [CHANGELOG.md](CHANGELOG.md). The same
+notes are on each [release](https://github.com/simsinght/koatsync/releases).
+
 ## What it does
 
 - Every highlight and note becomes one record on your PDS, linked to a book record with title,
@@ -164,8 +169,8 @@ The plugin follows what [ZenOS](https://github.com/xZenLabs/zen-os) looks for:
 - While books are waiting to sync it shows `↑n` as a ZenOS status-bar item (`koatsync pending`),
   which you can place under Zen Settings.
 
-It deliberately adds no button to the text-selection menu: ZenOS hides unknown selection buttons by
-default, and the automatic mirror makes one unnecessary.
+On ZenOS 4.3.1 and older it adds a Note button next to Highlight in the text-selection toolbar, so a
+note is select, Note, type. ZenOS 4.3.2 has its own Note button there, and koatsync steps aside.
 
 ## Others' highlights (prototype)
 
@@ -266,7 +271,7 @@ Clubs (see `club.lua` for the full picture):
 
 - Space types: `at.stim.reading.club` for a club (key: slug of the club name, owned by its creator,
   publishes its member list to members) and `at.stim.reading.readAlong` for one book a club reads
-  (key: `<club slug>.<book slug>`, e.g. `salty-living.butter`, owned by its host; books hosted
+  (key: `<club slug>.<book slug>`, e.g. `thursday-readers.pride-and-prejudice`, owned by its host; books hosted
   before v0.3.5 keep their old key, the book slug alone, and stay joinable by it).
 - `at.stim.reading.clubProfile` (rkey `self`, owner's repo in the club space): the club's name.
 - `at.stim.reading.clubBook`: title, authors, identifiers, the book space's URI and the club's. The
@@ -318,6 +323,15 @@ under the first, writes and reads progress records both ways, and deletes them a
 `dev/koreader.sh <profile> [book]` runs the macOS KOReader build on a throwaway profile; with
 `KOATSYNC_DEV=1` it also links `dev/patches/` (HTTP-inspector helpers to run a Lua file and inject
 taps), which `dev/make_fixture.lua` uses to build an others'-highlights fixture from the open book.
+
+Releasing: bump `version` in `koatsync.koplugin/_meta.lua`, add a `## vX.Y.Z - <date>` section at the
+top of `CHANGELOG.md` (screenshots in `docs/releases/vX.Y.Z/`, linked by their
+`raw.githubusercontent.com/.../main/...` URL so they show on the release page), commit, then tag
+`vX.Y.Z` and push the tag. `.github/workflows/release.yml` builds the zip and manifest with
+`dev/package.sh` and uses that section (`dev/release-notes.sh vX.Y.Z`) as the release notes; it
+fails before publishing if the tag doesn't match `_meta.lua` or the section is missing. To rewrite
+the notes of existing releases after editing `CHANGELOG.md`, run the Release workflow by hand
+(**Actions → Release → Run workflow**, `tags`: `all` or a list); it changes only the notes.
 
 Module map:
 
