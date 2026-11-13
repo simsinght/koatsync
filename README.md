@@ -92,9 +92,27 @@ and data folders and are kept.
 
 koatsync is not in ZenPM's built-in ZenLabs Repo yet, so it won't show up there without the source.
 
+## The menu
+
+**Tools → koatsync** (in ZenOS, add it to the Launcher, Navbar or Controls with **Add → Plugin
+Menu**) fits on one page, grouped by what you do:
+
+```
+Reading along: <club> ›      this book's read-along (or "Read along with a club book ›")
+Book clubs ›                 your clubs, join or create one
+Others' highlights ›         show/hide, hidden people, where the others are, refresh
+Sync this book now
+Syncing: 2 books waiting ›   sync the waiting books, the automatic-sync switches, last sync
+Account: sam ›               handle, server, sign out (or sign in)
+About koatsync
+```
+
+Switches only appear inside a submenu, next to what they switch; where things stand is in the row
+titles. Rarely used and destructive steps sit one level deeper and ask first.
+
 ## Sign in
 
-**Tools → koatsync → Sign in to your PDS…** asks for your handle, an app password, and optionally
+**Tools → koatsync → Account → Sign in with an app password…** asks for your handle, an app password, and optionally
 your PDS URL. Leave the URL blank if your handle resolves publicly; fill it in for a self-hosted PDS
 whose handles have no DNS of their own.
 
@@ -106,7 +124,7 @@ password=your-app-password
 pds=https://pds.example.com   # optional
 ```
 
-then choose **Tools → koatsync → Sign in from file…**. The file is deleted once the sign-in succeeds.
+then choose **Tools → koatsync → Account → Sign in from file…**. The file is deleted once the sign-in succeeds.
 
 The app password is stored in KOReader's settings directory in plain text, the same way KOReader's own
 progress sync stores its password. Use an app password, never your account password.
@@ -117,7 +135,7 @@ progress sync stores its password. Use an app password, never your account passw
   book is synced if Wi-Fi is on.
 - **On close**: a book with unsent changes is synced when you close it, if Wi-Fi is on.
 - **When Wi-Fi connects**: pending books go out shortly after the device comes online.
-- **Manual**: **Sync this book now** and **Sync pending books** in the menu, also available as
+- **Manual**: **Sync this book now** and **Syncing → Sync the waiting books now** in the menu, also available as
   dispatcher actions (`koatsync: sync this book`, `koatsync: sync pending books`,
   `koatsync: toggle automatic sync`) for gestures.
 - **Bulk backfill**: enable **koatsync (PDS)** under **Tools → Export highlights → Choose formats**,
@@ -168,7 +186,7 @@ handle (the server part is dropped when it is your own).
   Alice Moreau and Ben Okafor are on chapter 10" (chapter numbers as in each reader's own copy; a
   percentage for a copy without a table of contents; never chapter titles). People you hid are left
   out, and nothing is shown when nobody has shared. **Others' highlights → Where the others are**
-  lists it on demand, so does **Book club → Reading along**, and a person's card shows theirs.
+  lists it on demand, so does **Reading along → How it's going**, and a person's card shows theirs.
 - In a book that reads along with a club (below) they come from the book's space, cached on the
   device so the overlay works offline with the last fetched state. They are refreshed when the book
   opens with Wi-Fi already on, after each sync, and from **Others' highlights → Refresh from the club**.
@@ -179,32 +197,35 @@ handle (the server part is dropped when it is your own).
 ## Book clubs
 
 A club is an atproto permissioned space; each book the club reads gets a space of its own, so who
-reads which book can differ. Everything is under **Tools → koatsync → Book club** (in ZenOS, add
-koatsync to the Launcher with **Add → Plugin Menu**). Every step that needs the network asks for
+reads which book can differ. The open book's read-along is the first row of **Tools → koatsync**;
+clubs are under **Book clubs**. Every step that needs the network asks for
 Wi-Fi if it is off, shows what it is doing, and ends in a plain-language result or error.
 
 For a member:
 
-- **Join a club…** asks who runs it and the club's name (on a shared server the first part of a name
+- **Book clubs → Join a club…** asks who runs it and the club's name (on a shared server the first part of a name
   is enough: `sam` becomes `sam.<your server>`). It works once the owner has added you; until then
   the message says so and offers **Try again**.
 - When you open a book on the club's list (same ISBN, or the same title and author surname, so other
   editions count), koatsync asks "Read along with <club>?", saying where your highlights will go,
   that where you are in the book is shared too, and that the highlights you already made are shared. **Not now** asks again next time you open the book;
   **Not this book** stops asking for that file. **Read along with a club book** does the same by hand
-  (it also has **Join a book by its host's name…** for a guest).
-- **Reading along: <club>** shows where the book stands. **This book → Leave this read-along…**
+  (it also has **Join a book by its host's name…** for a guest: the host's name, the club's name and
+  the book's name; leave the club empty for a book hosted before v0.3.5).
+- **Reading along: <club> → How it's going** shows where the book stands. **Leave this read-along…**
   deletes your shared highlights from the club; your own highlights and notes stay, and the book is
   not offered again automatically.
-- **<club> → Remove this club from this device…** forgets it locally; nothing is deleted.
+- **Book clubs → <club> → Remove this club from this device…** forgets it locally; nothing is deleted.
 
 For whoever runs the club or hosts a book:
 
-- **Create a club…** (one field), then **Add members** (names separated by commas). Members are
+- **Book clubs → Create a club…** (one field), then **Add members** (names separated by commas). Members are
   listed under the club, where tapping one offers to remove them.
 - **<club> → Host this book for the club…** shows everyone in the club ticked; untick who should not
-  read it, optionally rename the book or add guests from outside the club, then **Host**.
-- **This book** (host) has **Add readers…** (club members not yet in, or anyone by name), **Remove
+  read it, optionally rename the book or add guests from outside the club, then **Host**. If you
+  already host a book of that name for this club, it offers to use that one for this copy instead.
+  Guests join with your name, the club's name and the book's name.
+- **Reading along: <club>** (host) has **Add readers…** (club members not yet in, or anyone by name), **Remove
   readers…**, and **Delete this book's read-along for everyone…**; **<club> → Delete this club for
   everyone…** removes the club. Each destructive step says exactly what goes and what stays.
 - In a linked book your shared highlights and notes go to your own repo inside the book's space, not
@@ -212,7 +233,7 @@ For whoever runs the club or hosts a book:
   finished or not), sent only along with a sync that is happening anyway (a few seconds after a
   highlight, on closing the book with Wi-Fi on, when Wi-Fi connects) and only when it moved: a new
   chapter, finishing, or 5% further. Leaving the read-along deletes it. "Save private" ones never leave the device. If the book was mirrored publicly
-  before, **This book → Move public highlights into the club…** deletes the public copies once the
+  before, **Reading along → Move public highlights into the club…** deletes the public copies once the
   club has them; until then the public copy gets edits and deletions but nothing new.
 
 Others' highlights are read with a space credential and shown only once verified with a record MAC
@@ -235,7 +256,8 @@ Clubs (see `club.lua` for the full picture):
 
 - Space types: `at.stim.reading.club` for a club (key: slug of the club name, owned by its creator,
   publishes its member list to members) and `at.stim.reading.readAlong` for one book a club reads
-  (key: slug of the book's name, owned by its host).
+  (key: `<club slug>.<book slug>`, e.g. `salty-living.butter`, owned by its host; books hosted
+  before v0.3.5 keep their old key, the book slug alone, and stay joinable by it).
 - `at.stim.reading.clubProfile` (rkey `self`, owner's repo in the club space): the club's name.
 - `at.stim.reading.clubBook`: title, authors, identifiers, the book space's URI and the club's. The
   host writes it into the club space (rkey = the book space's key) and into the book space (rkey `self`).
@@ -307,7 +329,7 @@ Module map:
   and cached on disk.
 - `clubprogress.lua`: where each reader is in a read-along book, the pure part (the progress record,
   when it is worth sending, the spoiler-free wording).
-- `clubmenu.lua`: the Book club menu and its screens (join, host, members, readers, leave, delete).
+- `clubmenu.lua`: the read-along and Book clubs rows of the menu and their screens (join, host, members, readers, leave, delete).
 - `fixturesource.lua`: others' highlights from a JSON file per book (dev fallback).
 - `overlay.lua`: draws others' highlights as a reader view module.
 - `othersreader.lua`: others' highlights in the reader (background fetching and placing, hiding people,

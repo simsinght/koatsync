@@ -82,7 +82,7 @@ end
 --- What to say for each kind.
 SyncNotice.TEXT = {
     network = _("koatsync: can't reach your PDS. Your highlights will go out later."),
-    auth = _("koatsync: sign in again under Tools → koatsync to keep syncing highlights."),
+    auth = _("koatsync: sign in again under Tools → koatsync → Account to keep syncing highlights."),
     server = _("koatsync: your PDS is having trouble. Your highlights will go out later."),
     other = _("koatsync: highlights couldn't be synced. They'll go out with the next sync."),
 }

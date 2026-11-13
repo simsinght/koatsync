@@ -260,77 +260,155 @@ end
 
 -- Menu -------------------------------------------------------------------------
 
+--[[--
+The koatsync menu, grouped by what people do (one ZenOS page, no scrolling):
+
+    Reading along: <club> ›     (or "Read along with a club book ›")  clubmenu.lua
+    Book clubs ›                                                      clubmenu.lua
+    Others' highlights ›                                              othersreader.lua
+    ─────
+    Sync this book now
+    Syncing: <state> ›          pending books, the automatic-sync toggles, sync status
+    ─────
+    Account: <name> ›           (or "Account: not signed in ›") sign in / sign out
+    About koatsync
+
+Toggles only live inside submenus, next to what they switch; statuses are in
+row titles ("Account: sam", "Syncing: 2 books waiting"), so a row that only
+says where you stand never looks like a switch. ZenOS's plugin launcher needs
+`menu_items.koatsync` with a `sub_item_table`.
+]]
 function Koatsync:addToMainMenu(menu_items)
+    local entries = {}
+    for _i, item in ipairs(ClubMenu.entries(self)) do entries[#entries + 1] = item end
+    local others = OthersReader.menu(self, self.others_reader)
+    others.separator = true
+    entries[#entries + 1] = others
+    entries[#entries + 1] = {
+        text = _("Sync this book now"),
+        enabled_func = function() return self:isSignedIn() and self.ui.document ~= nil end,
+        callback = function() self:onKoatsyncSyncBook() end,
+    }
+    entries[#entries + 1] = self:syncMenu()
+    entries[#entries + 1] = self:accountMenu()
+    entries[#entries + 1] = {
+        text = _("About koatsync"),
+        keep_menu_open = true,
+        callback = function()
+            self:alert(T(_("koatsync %1\n\nWrites at.stim.reading.book and at.stim.reading.highlight records to your PDS. Highlights stay in the book's sidecar; the PDS mirrors them."), PLUGIN_VERSION))
+        end,
+    }
     menu_items.koatsync = {
         text = _("koatsync"),
         sorting_hint = "tools",
+        sub_item_table = entries,
+    }
+end
+
+--- Short name of the signed-in account for row titles ("sam" on a shared server), or nil.
+function Koatsync:accountName()
+    if not self:isSignedIn() then return nil end
+    local a = self.store:account()
+    return Club.shortHandle(a.handle, a.handle) or a.handle or a.did
+end
+
+--- "Account: <name> ›": who is signed in, sign in and out.
+function Koatsync:accountMenu()
+    return {
+        text_func = function()
+            local name = self:accountName()
+            return name and T(_("Account: %1"), name) or _("Account: not signed in")
+        end,
+        sub_item_table_func = function()
+            if not self:isSignedIn() then
+                return {
+                    {
+                        text = _("Sign in with an app password…"),
+                        callback = function() self:showSignIn() end,
+                    },
+                    {
+                        text = _("Sign in from file…"),
+                        help_text = _("Reads koatsync_login.txt from the KOReader folder (lines: handle=…, password=…, and optionally pds=https://…), signs in, then deletes the file."),
+                        keep_menu_open = true,
+                        callback = function() self:signInFromFile() end,
+                    },
+                }
+            end
+            local a = self.store:account()
+            local function details()
+                self:alert(T(_("Signed in as %1\n\nServer: %2\nDID: %3"), a.handle or "?", a.pds or "?", a.did or "?"))
+            end
+            return {
+                {
+                    text = T(_("Handle: %1"), a.handle or a.did or "?"),
+                    keep_menu_open = true,
+                    callback = details,
+                },
+                {
+                    text = T(_("Server: %1"), ((a.pds or "?"):gsub("^https?://", ""):gsub("/$", ""))),
+                    keep_menu_open = true,
+                    callback = details,
+                    separator = true,
+                },
+                {
+                    text = _("Sign out…"),
+                    callback = function() self:signOut() end,
+                },
+            }
+        end,
+    }
+end
+
+--- "Syncing: <state> ›": pending books, the three automatic-sync toggles, and the sync status.
+function Koatsync:syncMenu()
+    local store = self.store
+    local function toggle(key)
+        return function() store:set(key, not store:get(key)); store:flush() end
+    end
+    return {
+        text_func = function()
+            if not self:isSignedIn() then return _("Syncing") end
+            local n = #store:dirtyFiles()
+            if n == 0 then return _("Syncing: up to date") end
+            return n == 1 and _("Syncing: 1 book waiting") or T(_("Syncing: %1 books waiting"), n)
+        end,
+        separator = true,
         sub_item_table = {
             {
                 text_func = function()
-                    if self:isSignedIn() then
-                        return T(_("Signed in as %1"), self.store:account().handle or self.store:account().did)
-                    end
-                    return _("Sign in to your PDS…")
+                    local n = #store:dirtyFiles()
+                    if n == 0 then return _("Nothing waiting to sync") end
+                    return n == 1 and _("Sync the waiting book now") or T(_("Sync the %1 waiting books now"), n)
                 end,
-                keep_menu_open = true,
-                callback = function()
-                    if self:isSignedIn() then self:signOut() else self:showSignIn() end
-                end,
-            },
-            {
-                text = _("Sign in from file…"),
-                help_text = _("Reads koatsync_login.txt from the KOReader folder (lines: handle=…, password=…, and optionally pds=https://…), signs in, then deletes the file."),
-                enabled_func = function() return not self:isSignedIn() end,
-                keep_menu_open = true,
-                callback = function() self:signInFromFile() end,
-                separator = true,
-            },
-            {
-                text = _("Sync this book now"),
-                enabled_func = function() return self:isSignedIn() and self.ui.document ~= nil end,
-                callback = function() self:onKoatsyncSyncBook() end,
-            },
-            {
-                text_func = function()
-                    local n = #self.store:dirtyFiles()
-                    if n == 0 then return _("Sync pending books") end
-                    return T(_("Sync pending books (%1)"), n)
-                end,
-                enabled_func = function() return self:isSignedIn() and #self.store:dirtyFiles() > 0 end,
+                enabled_func = function() return self:isSignedIn() and #store:dirtyFiles() > 0 end,
                 callback = function() self:onKoatsyncSyncAll() end,
                 separator = true,
             },
             {
                 text = _("Sync highlights automatically"),
                 help_text = _("Pushes a highlight or note about ten seconds after you stop editing it, when Wi-Fi is already on. Never turns Wi-Fi on."),
-                checked_func = function() return self.store:get("auto_sync") end,
-                callback = function() self.store:set("auto_sync", not self.store:get("auto_sync")); self.store:flush() end,
+                checked_func = function() return store:get("auto_sync") end,
+                callback = toggle("auto_sync"),
             },
             {
                 text = _("Sync when closing a book"),
-                checked_func = function() return self.store:get("sync_on_close") end,
-                callback = function() self.store:set("sync_on_close", not self.store:get("sync_on_close")); self.store:flush() end,
+                checked_func = function() return store:get("sync_on_close") end,
+                callback = toggle("sync_on_close"),
             },
             {
                 text = _("Sync pending books when Wi-Fi connects"),
-                checked_func = function() return self.store:get("flush_on_connect") end,
-                callback = function() self.store:set("flush_on_connect", not self.store:get("flush_on_connect")); self.store:flush() end,
+                checked_func = function() return store:get("flush_on_connect") end,
+                callback = toggle("flush_on_connect"),
                 separator = true,
             },
-            OthersReader.menu(self, self.others_reader),
-            ClubMenu.menu(self),
-            Privacy.menu(self),
             {
-                text = _("Status"),
+                text_func = function()
+                    local last = store:get("last_sync")
+                    return last and T(_("Last sync: %1"), os.date("%Y-%m-%d %H:%M", last)) or _("Last sync: never")
+                end,
+                help_text = _("Tap for details: the account, books waiting, and this book's highlights on the PDS."),
                 keep_menu_open = true,
                 callback = function() self:showStatus() end,
-            },
-            {
-                text = _("About"),
-                keep_menu_open = true,
-                callback = function()
-                    self:alert(T(_("koatsync %1\n\nWrites at.stim.reading.book and at.stim.reading.highlight records to your PDS. Highlights stay in the book's sidecar; the PDS mirrors them."), PLUGIN_VERSION))
-                end,
             },
         },
     }
@@ -369,7 +447,7 @@ end
 
 function Koatsync:onKoatsyncSyncBook()
     if not self.ui.document then return true end
-    if not self:isSignedIn() then self:alert(_("Sign in to your PDS first, under Tools → koatsync.")); return true end
+    if not self:isSignedIn() then self:alert(_("Sign in to your PDS first, under Tools → koatsync → Account.")); return true end
     NetworkMgr:runWhenOnline(function()
         local done = self:busy(_("Syncing highlights…"))
         local counts = self:syncOpenBook()
@@ -380,7 +458,7 @@ function Koatsync:onKoatsyncSyncBook()
 end
 
 function Koatsync:onKoatsyncSyncAll()
-    if not self:isSignedIn() then self:alert(_("Sign in to your PDS first, under Tools → koatsync.")); return true end
+    if not self:isSignedIn() then self:alert(_("Sign in to your PDS first, under Tools → koatsync → Account.")); return true end
     NetworkMgr:runWhenOnline(function() self:flushDirty(true) end)
     return true
 end
@@ -614,7 +692,7 @@ function Koatsync:report(counts, interactive)
         if interactive then
             local msg = counts.err.message or "?"
             if counts.err.status == 401 or counts.err.error == "AuthenticationRequired" then
-                msg = _("Sign in again under Tools → koatsync.")
+                msg = _("Sign in again under Tools → koatsync → Account.")
             end
             self:alert(T(_("koatsync: %1"), msg))
         elseif counts.err.status == 401 and not self.warned_auth then
@@ -828,11 +906,15 @@ function Koatsync:clubHost(club_uri, opts, file)
     return res
 end
 
---- Joins a book as a guest (host's handle + book name) and links the open book (or `file`) to it. Network.
-function Koatsync:clubJoinAsGuest(host, name, file)
+--[[--
+Joins a book as a guest (host's handle, the club's name, the book's name) and
+links the open book (or `file`) to it. `club_name` may be empty for a book
+hosted before club+book keys. Network.
+]]
+function Koatsync:clubJoinAsGuest(host, name, file, club_name)
     local book = self:bookContext(file)
     if not book then return noBook() end
-    local desc, err = self:clubService():joinBook(host, name)
+    local desc, err = self:clubService():joinBook(host, name, club_name)
     if not desc then return nil, err end
     local link, counts = self:clubLink(desc, file)
     return { book = desc, link = link, counts = counts }
@@ -921,7 +1003,7 @@ function Koatsync:clubRefreshOthers(opts)
     opts = opts or {}
     local link = self:linkFor()
     if not link then return nil, Club.err(Club.ERR.NOT_LINKED, _("This book is not reading along with a club.")) end
-    if not self:isSignedIn() then return nil, Club.err(Club.ERR.NOT_SIGNED_IN, _("Sign in to your PDS first, under Tools → koatsync.")) end
+    if not self:isSignedIn() then return nil, Club.err(Club.ERR.NOT_SIGNED_IN, _("Sign in to your PDS first, under Tools → koatsync → Account.")) end
     if not opts.skip and self.others_reader then opts.skip = self.others_reader:hiddenSet() end
     local stats, err = self:clubSource():refresh(link.space, opts)
     if stats then
@@ -1065,7 +1147,7 @@ function Koatsync:readAlongText(desc, who)
     end
     local st = self:clubStatus()
     if st and (st.public_records or 0) > 0 then
-        lines[#lines + 1] = _("Copies already in your public repo stay there until you move them (Book club → This book).")
+        lines[#lines + 1] = _("Copies already in your public repo stay there until you move them (koatsync → Reading along).")
     end
     return table.concat(lines, "\n\n")
 end

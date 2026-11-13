@@ -49,7 +49,7 @@ function Target:getMenuTable()
         checked_func = function() return self:isEnabled() end,
         callback = function()
             if not self:isReadyToExport() then
-                if self.plugin then self.plugin:alert(_("Sign in to your PDS first, under Tools → koatsync.")) end
+                if self.plugin then self.plugin:alert(_("Sign in to your PDS first, under Tools → koatsync → Account.")) end
                 return
             end
             settings().enabled = not settings().enabled

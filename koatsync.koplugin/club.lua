@@ -15,8 +15,10 @@ Data model (see also lexicons/ and README "Book clubs"):
   (rkey `self`, the club's display name); every member's repo may hold
   `Club.BOOK` records announcing a book the club reads.
 * Each BOOK the club reads is its own space of type `Club.BOOK_SPACE`
-  (`at://<host>/space/at.stim.reading.readAlong/<slug of the book name>`), created
-  by whoever hosts it. The host's repo there holds the same `Club.BOOK` record
+  (`at://<host>/space/at.stim.reading.readAlong/<club slug>.<book slug>`, see
+  `Club.bookKey`), created by whoever hosts it. Books hosted before v0.3.5 are
+  keyed by the book slug alone (`Club.legacyBookKey`) and keep working: the
+  club's records carry each book's full space URI. The host's repo there holds the same `Club.BOOK` record
   under rkey `self` (so a guest who joins by name learns what the book is), and
   every reader's repo holds their own `at.stim.reading.book` record and
   `at.stim.reading.highlight` records, exactly as in the public repo.
@@ -70,6 +72,27 @@ function Club.slug(name)
     end
     return s ~= "" and s or nil
 end
+
+--[[--
+The space key of a book hosted for a club: the club's key, a `.`, and the
+book's slug, e.g. `salty-living.butter`. Slugs never contain `.`, so the key
+splits back unambiguously; each part is at most `Club.SLUG_MAX` characters,
+so the key is at most 129, well inside the 512 the PDS accepts for a space key
+(record-key syntax: letters, digits and `.-_:~`). One account can so host the
+same title in several clubs; twice in one club gives the same key.
+
+@param club_key the club space's key (its skey), or a club name
+@param book_name the book's name (default: its title)
+@treturn string|nil key, or nil when either part has no letters or digits
+]]
+function Club.bookKey(club_key, book_name)
+    local c, b = Club.slug(club_key), Club.slug(book_name)
+    if not c or not b then return nil end
+    return c .. "." .. b
+end
+
+--- The key books were hosted under before club+book keys: the book's slug alone.
+function Club.legacyBookKey(book_name) return Club.slug(book_name) end
 
 --[[--
 What a person typed as a handle, made whole: `@` dropped, lower-cased, and a

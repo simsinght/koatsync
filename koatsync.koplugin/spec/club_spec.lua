@@ -114,14 +114,15 @@ check("outsider cannot join", xj == nil and xerr.code == Club.ERR.NOT_MEMBER)
 
 -- a member (not the owner) hosts a book, leaving `third` out, with a guest
 local hosted, herr = member:host(club.uri, gutenberg, { exclude = { "did:plc:third" }, guests = { "guest" } })
-check("member hosts a book", hosted and hosted.space == "at://did:plc:member/space/at.stim.reading.readAlong/pride-and-prejudice", herr and herr.message)
+check("member hosts a book under club+book key", hosted and hosted.space == "at://did:plc:member/space/at.stim.reading.readAlong/thursday-readers.pride-and-prejudice", herr and herr.message)
 local bsp = hosted and world.spaces[hosted.space]
 check("readers added: owner + guest, not third, not self", bsp and bsp.members["did:plc:owner"] and bsp.members["did:plc:guest"]
     and not bsp.members["did:plc:third"] and not bsp.members["did:plc:member"])
 check("announced in the book space", bsp and bsp.repos["did:plc:member"].colls[Club.BOOK].self.value.space == hosted.space)
-check("announced in the club space", world.spaces[club.uri].repos["did:plc:member"].colls[Club.BOOK]["pride-and-prejudice"] ~= nil)
+check("announced in the club space", world.spaces[club.uri].repos["did:plc:member"].colls[Club.BOOK]["thursday-readers.pride-and-prejudice"] ~= nil)
 local dup, duperr = member:host(club.uri, gutenberg)
-check("hosting the same name again is refused", dup == nil and duperr.code == Club.ERR.EXISTS)
+check("hosting the same name again in the same club: Exists, pointing at it", dup == nil and duperr.code == Club.ERR.EXISTS and duperr.space == hosted.space, duperr and duperr.message)
+check("the Exists message does not ask for a new name", duperr and not duperr.message:lower():find("name for") and duperr.message:find("Thursday Readers", 1, true))
 local obooks = owner:books(club.uri, true)
 check("owner discovers the book", obooks and #obooks == 1 and obooks[1].title == "Pride and Prejudice" and obooks[1].host == "did:plc:member")
 local offers = owner:matchesFor(Club.localMeta({ title = "Pride and Prejudice", authors = "Austen, Jane" }, "/se.epub"), "md5-se")
@@ -133,13 +134,15 @@ local link = owner:link("md5-se", "/se.epub", offers[1].book)
 check("link", link and owner:linkFor("md5-se").space == hosted.space and owner.store:declined("md5-se") == nil)
 local tb, tberr = third:books(club.uri, true)
 check("third sees the book listed", tb and #tb == 1)
-local gb, gberr = guest:joinBook("member", "Pride and Prejudice")
+local gb, gberr = guest:joinBook("member", "Pride and Prejudice", "Thursday Readers")
 check("guest joins the book by name", gb and gb.title == "Pride and Prejudice" and gb.via == "guest", gberr and gberr.message)
 local gc, gcerr = guest:join("owner", "Thursday Readers")
 check("guest cannot see the club", gc == nil and gcerr.code == Club.ERR.NOT_MEMBER)
-local tj, tjerr = third:joinBook("member", "Pride and Prejudice")
+local tj, tjerr = third:joinBook("member", "Pride and Prejudice", "Thursday Readers")
 check("left-out member cannot join the book", tj == nil and tjerr.code == Club.ERR.NOT_MEMBER)
-check("host adds a reader later", member:addReader(hosted.space, "third") ~= nil and third:joinBook("member", "pride and prejudice") ~= nil)
+check("host adds a reader later", member:addReader(hosted.space, "third") ~= nil and third:joinBook("member", "pride and prejudice", "thursday readers") ~= nil)
+local nc, ncerr = guest:joinBook("member", "Pride and Prejudice")
+check("guest without the club name: legacy key tried, not found", nc == nil and ncerr.code == Club.ERR.NOT_MEMBER)
 local _, rr = owner:addReader(hosted.space, "outsider")
 check("only the host adds readers", rr and rr.code == Club.ERR.NOT_OWNER)
 
@@ -326,6 +329,91 @@ do
     local l = Club.label({ did = "did:plc:abcdefgh1234" }, own)
     check("label: never a DID", not l:find("did:") and l:find("1234"), l)
     check("label: nothing at all", Club.label(nil, own) == "a reader")
+end
+
+
+-- book space keys: club + book, with the old book-only key still working ----------------
+do
+    check("bookKey", Club.bookKey("salty-living", "Butter") == "salty-living.butter")
+    check("bookKey from names", Club.bookKey("Salty Living", "Butter: A Novel") == "salty-living.butter-a-novel")
+    check("bookKey empty parts", Club.bookKey("!!", "Butter") == nil and Club.bookKey("salty-living", "") == nil)
+    local long = Club.bookKey(string.rep("club ", 40), string.rep("book ", 40))
+    check("bookKey long: each part capped, valid space key", long and #long <= 2 * Club.SLUG_MAX + 1 and #long <= 512
+        and long:match("^[%w%.%-_:~]+$") and select(2, long:gsub("%.", "")) == 1 and not long:find("%-%.") , long)
+    check("legacyBookKey is the book slug", Club.legacyBookKey("Butter") == "butter")
+
+    local w = World.new()
+    local function acct(did, handle)
+        local sp = w:as(did, handle)
+        return Clubs.new{ client = sp.client, spaces = sp, store = Store.new(memSettings()), resolveHandle = w:resolver() }, sp
+    end
+    local host, hsp = acct("did:plc:host", "host.pds.test")
+    local reader = acct("did:plc:reader", "reader.pds.test")
+    local stranger = acct("did:plc:stranger", "stranger.pds.test")
+    local salty = host:create("salty living")
+    local other = host:create("Other Club")
+    host:addMember(salty.uri, "reader")
+    host:addMember(other.uri, "reader")
+    local butter = { title = "Butter", authors = { "Asako Yuzuki" }, identifiers = {} }
+    local base = "at://did:plc:host/space/at.stim.reading.readAlong/"
+
+    -- a book hosted before club+book keys: `butter`, announced in salty living under rkey `butter`
+    local legacy_space = hsp:ensureSpace(Club.BOOK_SPACE, "butter")
+    hsp:putMember(legacy_space, "did:plc:reader", true, true)
+    local old = Club.bookRecord{ title = "Butter", authors = { "Asako Yuzuki" }, space = legacy_space, club = salty.uri, createdAt = "2026-11-01T00:00:00Z" }
+    hsp:putRecord(legacy_space, Club.BOOK, Club.SELF, old)
+    hsp:putRecord(salty.uri, Club.BOOK, "butter", old)
+    hsp:putRecord(legacy_space, Records.HIGHLIGHT, "h1", { text = "a real highlight", book = "x" })
+    check("legacy book listed for the club", #host:books(salty.uri, true) == 1)
+
+    -- same title in another club: its own space, not refused
+    local o, oerr = host:host(other.uri, butter)
+    check("same title in another club gets its own space", o and o.space == base .. "other-club.butter" and o.space ~= legacy_space and not o.reused, oerr and oerr.message)
+    check("announced under the new key", w.spaces[other.uri].repos["did:plc:host"].colls[Club.BOOK]["other-club.butter"] ~= nil)
+
+    -- same title in the club that has it under the old key: offered, not duplicated
+    local d, derr = host:host(salty.uri, butter)
+    check("legacy book in the same club: Exists with the old space", d == nil and derr.code == Club.ERR.EXISTS and derr.space == legacy_space, derr and derr.message)
+    check("no new space made for it", w.spaces[base .. "salty-living.butter"] == nil)
+    local r, rerr = host:host(salty.uri, butter, { reuse = true })
+    check("reuse takes the old space", r and r.space == legacy_space and r.reused == true, rerr and rerr.message)
+    local sp = w.spaces[legacy_space]
+    check("reuse keeps what was shared", sp.repos["did:plc:host"].colls[Records.HIGHLIGHT].h1 ~= nil)
+    check("reuse keeps the original date", sp.repos["did:plc:host"].colls[Club.BOOK].self.value.createdAt == "2026-11-01T00:00:00Z")
+    local idx = w.spaces[salty.uri].repos["did:plc:host"].colls[Club.BOOK]
+    check("reuse replaces the old announcement, adds no second one", idx.butter ~= nil and idx["salty-living.butter"] == nil)
+    check("club still lists one Butter", #host:books(salty.uri, true) == 1)
+
+    -- new-key collision in one club: offered too, and reuse works
+    local d2, d2err = host:host(other.uri, butter)
+    check("new-key book in the same club: Exists", d2 == nil and d2err.code == Club.ERR.EXISTS and d2err.space == o.space)
+    local r2 = host:host(other.uri, butter, { reuse = true })
+    check("reuse of a new-key book", r2 and r2.space == o.space and r2.reused)
+
+    -- the old key in the same club for a book named differently is no collision
+    local e = host:host(salty.uri, { title = "Emma", authors = { "Jane Austen" } })
+    check("other book in the legacy club uses the new key", e and e.space == base .. "salty-living.emma")
+
+    -- guests: club + book, falling back to the old key
+    host:addReader(legacy_space, "stranger")
+    host:addReader(o.space, "stranger")
+    local g1, g1err = stranger:joinBook("host", "Butter")
+    check("guest joins a legacy book without the club name", g1 and g1.space == legacy_space, g1err and g1err.message)
+    local g2 = stranger:joinBook("host", "Butter", "salty living")
+    check("guest typing the club name still finds the legacy book", g2 and g2.space == legacy_space)
+    local g3 = stranger:joinBook("host", "Butter", "Other Club")
+    check("guest joins a new-key book with the club name", g3 and g3.space == o.space)
+    local g4, g4err = stranger:joinBook("host", "Butter", "No Such Club")
+    check("wrong club name falls back to the legacy key", g4 and g4.space == legacy_space, g4err and g4err.message)
+    local mine = host:joinBook("host", "Butter", "Other Club")
+    check("host joining own book by name", mine and mine.space == o.space)
+    local n, nerr = reader:joinBook("host", "Emma")
+    check("legacy fallback misses a new-key book without the club name", n == nil and nerr.code == Club.ERR.NOT_MEMBER)
+
+    -- delete: the announcement goes for both kinds of key
+    check("delete a new-key book", host:deleteBook(o.space, other.uri) and w.spaces[other.uri].repos["did:plc:host"].colls[Club.BOOK]["other-club.butter"] == nil)
+    check("delete a legacy book", host:deleteBook(legacy_space, salty.uri) and w.spaces[salty.uri].repos["did:plc:host"].colls[Club.BOOK].butter == nil
+        and w.spaces[legacy_space] == nil)
 end
 
 print(string.format("club: %d passed, %d failed", passed, failed))

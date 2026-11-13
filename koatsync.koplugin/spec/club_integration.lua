@@ -237,7 +237,7 @@ local function main()
     check("only the edited record is re-verified, and it shows", est.verified == 1 and edited, est)
 
     -- 10. outsider can neither join nor read ---------------------------------------------------------
-    local xb, xberr = X.clubs:joinBook(O.client.handle, BOOK_NAME)
+    local xb, xberr = X.clubs:joinBook(O.client.handle, BOOK_NAME, CLUB_NAME)
     check("outsider cannot join the book", xb == nil and xberr.code == Club.ERR.NOT_MEMBER, xberr)
     local xs, xserr = X.source:refresh(book_space)
     check("outsider cannot read the book space", xs == nil and xserr and xserr.error == "SpaceNotFound", xserr)
@@ -249,8 +249,8 @@ local function main()
     -- 11. a guest path: the outsider is let into the book only, never the club ---------------------------
     must(O.clubs:addReader(book_space, X.client.handle), nil, "addReader outsider")
     local gb
-    gb, err = X.clubs:joinBook(O.client.handle:match("^([^.]+)"), BOOK_NAME)
-    check("guest joins the book by host + name", gb and gb.title == "Pride and Prejudice" and gb.club == club_uri, gb or err)
+    gb, err = X.clubs:joinBook(O.client.handle:match("^([^.]+)"), BOOK_NAME, CLUB_NAME)
+    check("guest joins the book by host + club + name", gb and gb.title == "Pride and Prejudice" and gb.club == club_uri, gb or err)
     local gst = X.source:refresh(book_space)
     check("guest reads the book's highlights", gst and #X.source:fetch{ space = book_space } == 3, gst)
     local gc, gcerr = X.clubs:join(O.client.handle, CLUB_NAME)

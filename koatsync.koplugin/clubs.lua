@@ -59,7 +59,7 @@ function Clubs.explain(err, what)
         return Club.err(E.NOT_FOUND, (what or "That club") .. " was deleted by whoever ran it. You can remove it from this device.", err)
     end
     if err.status == 401 or err.error == "AuthenticationRequired" then
-        return Club.err(E.NOT_SIGNED_IN, "Sign in again under Tools → koatsync.", err)
+        return Club.err(E.NOT_SIGNED_IN, "Sign in again under Tools → koatsync → Account.", err)
     end
     return Club.err(E.SERVER, "The server said: " .. tostring(err.message or err.error or err.status), err)
 end
@@ -70,7 +70,7 @@ function Clubs:me() return self.client.did end
 
 function Clubs:requireSignedIn()
     if not self.client or not self.client.did or not self.client.access_jwt then
-        return fail(E.NOT_SIGNED_IN, "Sign in to your PDS first, under Tools → koatsync.")
+        return fail(E.NOT_SIGNED_IN, "Sign in to your PDS first, under Tools → koatsync → Account.")
     end
     return true
 end
@@ -421,23 +421,57 @@ end
 local BOOK_POLICY = { publishMembers = true, publishPolicy = true }
 
 --[[--
-Hosts a book for a club: creates the book's space under this account, adds the
-readers (the club roster minus `opts.exclude`, plus `opts.guests`), and
-announces it in the book space (rkey `self`) and in the club space.
+The book space this account already hosts for club `uri` under `name`, if any:
+first the club+book key, then the legacy book-slug key (only when that space
+says it belongs to this club; the same title hosted for another club under the
+old key is a different book). Network: one or two reads of the host's own
+records. Returns the space uri and its `self` record, or nil (or nil plus an
+error when the server could not be reached).
+]]
+function Clubs:hostedFor(uri, name)
+    local _a, _t, club_key = Spaces.parseSpaceUri(uri)
+    local candidates = {}
+    local key = club_key and Club.bookKey(club_key, name)
+    if key then candidates[#candidates + 1] = { space = Spaces.spaceUri(self:me(), Club.BOOK_SPACE, key) } end
+    local legacy = Club.legacyBookKey(name)
+    if legacy then candidates[#candidates + 1] = { space = Spaces.spaceUri(self:me(), Club.BOOK_SPACE, legacy), legacy = true } end
+    for _, c in ipairs(candidates) do
+        local got, gerr = self.spaces:getRecord(c.space, Club.BOOK, Club.SELF)
+        if not got and type(gerr) == "table" and gerr.status == nil then return nil, Clubs.explain(gerr) end
+        local rec = got and got.value
+        if type(rec) == "table" and (not c.legacy or rec.club == uri) then return c.space, rec end
+    end
+    return nil
+end
+
+--[[--
+Hosts a book for a club: creates the book's space under this account (key
+`Club.bookKey(<club key>, name)`), adds the readers (the club roster minus
+`opts.exclude`, plus `opts.guests`), and announces it in the book space (rkey
+`self`) and in the club space (rkey: the book space's key).
+
+If this account already hosts a book of that name for this club (under the
+club+book key, or the legacy book-slug key from before v0.3.5), it fails with
+`Club.ERR.EXISTS` and `err.space` set, unless `opts.reuse`: then that space is
+used as it is. Reusing adds the ticked readers (nobody already in it is
+removed), keeps every record already in it, keeps the book's original
+`createdAt`, refreshes the title/authors/ISBN of its announcement, and links
+this file to it.
 
 @param uri club space uri
 @param meta { title, authors, identifiers } (Club.localMeta)
 @param opts optional { name = space name (default: the title), exclude = {did...},
-  guests = {handle...}, reuse = true to take over a book space this account already has }
-@treturn table { space, book = descriptor, added = {did...}, failed = { {who, error} } }
+  guests = {handle...}, reuse = true to use a book space this account already hosts for this club }
+@treturn table { space, book = descriptor, added = {did...}, failed = { {who, error} }, reused = bool }
 ]]
 function Clubs:host(uri, meta, opts)
     opts = opts or {}
     local club, err = self:club(uri)
     if not club then return nil, err end
     local name = opts.name or meta.title
-    local slug = Club.slug(name)
-    if not slug then return fail(E.BAD_INPUT, "The book needs a name with at least one letter or digit.") end
+    local _a, _t, club_key = Spaces.parseSpaceUri(uri)
+    local key = club_key and Club.bookKey(club_key, name)
+    if not key then return fail(E.BAD_INPUT, "The book needs a name with at least one letter or digit.") end
     local roster
     roster, err = self:roster(uri)
     if not roster then return nil, err end
@@ -446,10 +480,20 @@ function Clubs:host(uri, meta, opts)
         local did, herr = self:resolve(g)
         if did then guests[#guests + 1] = did else failed[#failed + 1] = { who = g, error = herr } end
     end
-    local space, created = self.spaces:ensureSpace(Club.BOOK_SPACE, slug, Spaces.memberspacePolicy(BOOK_POLICY))
-    if not space then return nil, Clubs.explain(created) end
-    if not created and not opts.reuse then
-        return fail(E.EXISTS, "You already host a book called “" .. name .. "”. Choose another name for this one.")
+    local function exists(space)
+        local e = Club.err(E.EXISTS, "“" .. (club.name or "This club") .. "” already has a book called “" .. name .. "”, hosted by you.")
+        e.space = space
+        return nil, e
+    end
+    local space, prev = self:hostedFor(uri, name)
+    if not space and prev then return nil, prev end -- could not reach the server
+    local created = false
+    if space then
+        if not opts.reuse then return exists(space) end
+    else
+        space, created = self.spaces:ensureSpace(Club.BOOK_SPACE, key, Spaces.memberspacePolicy(BOOK_POLICY))
+        if not space then return nil, Clubs.explain(created) end
+        if not created and not opts.reuse then return exists(space) end
     end
     local readers = Club.readers{ owner = club.owner, members = roster.dids, self = self:me(),
         exclude = opts.exclude, guests = guests }
@@ -459,12 +503,13 @@ function Clubs:host(uri, meta, opts)
         if res then added[#added + 1] = did else failed[#failed + 1] = { who = did, error = Clubs.explain(perr) } end
     end
     local rec = Club.bookRecord{ title = meta.title, authors = meta.authors, identifiers = meta.identifiers,
-        space = space, club = uri }
+        space = space, club = uri, createdAt = prev and type(prev.createdAt) == "string" and prev.createdAt or nil }
     local res
     res, err = self.spaces:putRecord(space, Club.BOOK, Club.SELF, rec)
     if not res then return nil, Clubs.explain(err) end
-    -- One announcement per book space: the rkey is the space key, so re-hosting replaces it.
-    res, err = self.spaces:putRecord(uri, Club.BOOK, slug, rec)
+    -- One announcement per book space: the rkey is the space's key, so re-hosting replaces it.
+    local _a2, _t2, skey = Spaces.parseSpaceUri(space)
+    res, err = self.spaces:putRecord(uri, Club.BOOK, skey, rec)
     if not res then return nil, Clubs.explain(err) end
     local desc = Club.descriptor(rec, { host = self:me(), uri = res.uri, cid = res.cid, club = uri, via = "club" })
     club = self.store:club(uri)
@@ -473,7 +518,7 @@ function Clubs:host(uri, meta, opts)
     table.insert(books, 1, desc)
     club.books = books
     self.store:setClub(club)
-    return { space = space, book = desc, added = added, failed = failed }
+    return { space = space, book = desc, added = added, failed = failed, reused = not created }
 end
 
 local function requireHost(self, space)
@@ -544,27 +589,46 @@ function Clubs:deleteBook(space, club_uri)
 end
 
 --[[--
-Joins one book directly, as a guest who is not in the club: the host's handle
-and the book's name. Works once the host has added this account.
+Joins one book directly, as a guest who is not in the club: the host's handle,
+the club's name and the book's name. The space key is `Club.bookKey(club, book)`;
+without a club name, or when that space can't be opened, the legacy book-slug
+key from before v0.3.5 is tried too, so older books stay joinable. Works once
+the host has added this account.
 
+@param host_input the host's handle (a bare name gets the reader's own domain)
+@param name the book's name
+@param club_name optional, the club's name
 @treturn table descriptor (via = "guest")
 ]]
-function Clubs:joinBook(host_input, name)
+function Clubs:joinBook(host_input, name, club_name)
     local ok, err = self:requireSignedIn()
     if not ok then return nil, err end
     local host, host_handle = self:resolve(host_input)
     if not host then return nil, host_handle end
-    local slug = Club.slug(name)
-    if not slug then return fail(E.BAD_INPUT, "Type the book's name.") end
-    local space = Spaces.spaceUri(host, Club.BOOK_SPACE, slug)
-    if host ~= self:me() then
-        local _, cerr = self.spaces:credential(space, true)
-        if cerr then
-            local e = Clubs.explain(cerr, "The book “" .. name .. "” by @" .. (host_handle or host))
-            if e.code == E.NOT_MEMBER then e.message = e.message .. " Ask the host to add you." end
-            return nil, e
+    local legacy = Club.legacyBookKey(name)
+    if not legacy then return fail(E.BAD_INPUT, "Type the book's name.") end
+    local keys = {}
+    local key = club_name and club_name ~= "" and Club.bookKey(club_name, name)
+    if key then keys[#keys + 1] = key end
+    keys[#keys + 1] = legacy
+    local space, first_err
+    for _, k in ipairs(keys) do
+        local s = Spaces.spaceUri(host, Club.BOOK_SPACE, k)
+        local cerr
+        if host == self:me() then
+            local _i, gerr = self.spaces:getSpace(s)
+            cerr = gerr
+        else
+            local _c
+            _c, cerr = self.spaces:credential(s, true)
         end
+        if not cerr then space = s; break end
+        local e = Clubs.explain(cerr, "The book “" .. name .. "” by @" .. (host_handle or host))
+        if e.code == E.NOT_MEMBER and host ~= self:me() then e.message = e.message .. " Ask the host to add you." end
+        first_err = first_err or e
+        if e.code ~= E.NOT_MEMBER then return nil, e end -- network and the like: no point trying the next key
     end
+    if not space then return nil, first_err end
     local got
     if host == self:me() then got = self.spaces:getRecord(space, Club.BOOK, Club.SELF)
     else got = self.spaces:credGetRecord(space, host, Club.BOOK, Club.SELF) end

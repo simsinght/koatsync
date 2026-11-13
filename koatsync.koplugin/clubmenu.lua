@@ -1,17 +1,16 @@
 --[[--
-The Book club menu (Tools → koatsync → Book club) and its screens, built on
-the club API (main.lua "Book clubs" and clubs.lua).
+The book-club rows of the koatsync menu (main.lua addToMainMenu) and their
+screens, built on the club API (main.lua "Book clubs" and clubs.lua).
 
 Layout, common path first:
 
-    Book club
-      Reading along: <club>          (or "Read along with a club book ›")
-      This book ›                    (readers, moving public copies, leaving: confirmed)
-      ─────
-      <each club> ›                  Books ›, Members ›, Host this book…,
-                                     then (out of the way) remove / delete
-      Join a club…
-      Create a club…
+    Reading along: <club> ›        How it's going (status card), readers (host),
+                                   moving public copies, leaving, deleting (host)
+      (or "Read along with <club>… ›" / "Read along with a club book ›": known
+       books, matching ones first; join a book by its host's name)
+    Book clubs ›                   <each club> › (Books, Members, Host this book…,
+                                   then remove / delete), Join a club…, Create a club…,
+                                   the dev switch
 
 Every network action goes through `run`: it asks for Wi-Fi if needed
 (plugin:online), shows a wait box, and ends in a plain-language result or
@@ -60,7 +59,8 @@ end
 --[[--
 The common shape of every network action: online first, a wait box, then
 `done(result)` or a readable error. `explain(err)` may rewrite the message for
-the situation; `retry` reopens whatever asked for the input.
+the situation; `retry` reopens whatever asked for the input; `handle(err)` may
+take over an error entirely (return true when it did).
 ]]
 local function run(plugin, o)
     plugin:online(o.what, function()
@@ -72,6 +72,7 @@ local function run(plugin, o)
             return failed(plugin, T(_("Something went wrong: %1"), tostring(res)), o.retry)
         end
         if res == nil then
+            if o.handle and o.handle(err or {}) then return end
             local msg = o.explain and o.explain(err or {}) or (err and err.message) or _("Something went wrong.")
             return failed(plugin, msg, o.retry)
         end
@@ -264,19 +265,22 @@ local function joinAsGuest(plugin, values)
     values = values or {}
     ask(_("Join a book by name"), {
         { text = values[1], description = _("Who hosts it?"), hint = _("e.g. sam"), required = true },
-        { text = values[2], description = _("The book's name, as they told you:"), hint = _("e.g. Pride and Prejudice"), required = true },
+        { text = values[2], description = _("Which club is it for? (Leave empty if they didn't say.)"), hint = _("e.g. Tuesday Readers") },
+        { text = values[3], description = _("The book's name, as they told you:"), hint = _("e.g. Pride and Prejudice"), required = true },
     }, _("Join"), function(v)
         local host = typedName(plugin, v[1])
         run(plugin, {
             what = _("Joining a book"),
-            busy = T(_("Looking for “%1” by %2…"), v[2], host),
-            fn = function() return plugin:clubJoinAsGuest(v[1], v[2]) end,
+            busy = T(_("Looking for “%1” by %2…"), v[3], host),
+            fn = function() return plugin:clubJoinAsGuest(v[1], v[3], nil, v[2]) end,
             retry = function() joinAsGuest(plugin, v) end,
             explain = function(err)
                 local E = require("club").ERR
                 if err.code == E.NOT_MEMBER then
-                    return T(_("Couldn't open “%1” by %2.\n\nEither the book is named a little differently, or %2 hasn't added you yet. Ask them to add “%3”, then try again."),
-                        v[2], host, myName(plugin))
+                    local named = v[2] ~= "" and _("the club or the book is named a little differently")
+                        or _("the book is named a little differently, or you need the club's name too")
+                    return T(_("Couldn't open “%1” by %2.\n\nEither %4, or %2 hasn't added you yet. Ask them to add “%3”, then try again."),
+                        v[3], host, myName(plugin), named)
                 end
                 return err.message
             end,
@@ -297,8 +301,7 @@ local function readAlongItems(plugin)
     for _i, b in ipairs(service:allBooks()) do
         local how = meta and Club.matchBook(meta, b)
         local item = {
-            text = bookLine(b) .. " · " .. (b.club_name or plugin:clubNameFor(b)),
-            mandatory = how and _("matches") or nil,
+            text = bookLine(b) .. " · " .. (b.club_name or plugin:clubNameFor(b)) .. (how and (" · " .. _("matches this book")) or ""),
             callback = function() plugin:askReadAlong(b, false) end,
         }
         if how then matched[#matched + 1] = item else rest[#rest + 1] = item end
@@ -336,7 +339,7 @@ local function readAlongItems(plugin)
     }
     items[#items + 1] = {
         text = _("Join a book by its host's name…"),
-        help_text = _("For a book someone hosts outside any club you are in: type the host's name and the book's name."),
+        help_text = _("For a book someone hosts outside any club you are in: type the host's name, the club's name and the book's name."),
         callback = function() joinAsGuest(plugin) end,
     }
     return items
@@ -352,7 +355,7 @@ end
 
 local function askName(current, callback)
     ask(_("The book's name"), {
-        { text = current, description = _("Guests type this to join, so keep it short. It must differ from other books you host."), required = true },
+        { text = current, description = _("Guests type this and the club's name to join, so keep it short."), required = true },
     }, _("OK"), function(v) callback(v[1]) end)
 end
 
@@ -365,22 +368,29 @@ local function doHost(plugin, club, o)
         what = _("Hosting a book"),
         busy = T(_("Setting up “%1” for %2…"), o.name, club.name),
         fn = function()
-            return plugin:clubHost(club.uri, { name = o.name, exclude = exclude, guests = o.guests })
+            return plugin:clubHost(club.uri, { name = o.name, exclude = exclude, guests = o.guests, reuse = o.reuse })
         end,
-        explain = function(err)
-            if err.code == require("club").ERR.EXISTS then
-                return T(_("You already host a book called “%1”. Give this one another name."), o.name)
-            end
-            return err.message
+        handle = function(err)
+            if err.code ~= require("club").ERR.EXISTS then return false end
+            -- Same name in the same club: this account hosts it already. Offer that one.
+            confirm(T(_("The club “%1” already has “%2”, hosted by you. Use it for this copy?\n\n• Everything already shared in it stays.\n• Anyone you ticked who isn't in it yet is added; nobody is taken out."), club.name, o.name),
+                _("Use it"), function()
+                    o.reuse = true
+                    doHost(plugin, club, o)
+                end, _("Cancel"))
+            return true
         end,
         retry = function() hostSheet(plugin, club, o) end,
         done = function(res)
             local lines = {}
-            if #res.added > 0 then
+            if res.reused then
+                lines[1] = T(_("This copy now reads along with “%1” for %2."), res.book.title, club.name)
+                if #res.added > 0 then lines[2] = T(_("Readers in it now include %1."), names(plugin, res.added)) end
+            elseif #res.added > 0 then
                 lines[1] = T(_("Hosting “%1” for %2 with %3."), res.book.title, club.name, names(plugin, res.added))
                 lines[2] = _("They'll be asked to read along when they open the book.")
             else
-                lines[1] = T(_("Hosting “%1” for %2. Nobody else reads it yet: add readers under Book club → This book."), res.book.title, club.name)
+                lines[1] = T(_("Hosting “%1” for %2. Nobody else reads it yet: add readers under koatsync → Reading along."), res.book.title, club.name)
             end
             if #res.failed > 0 then
                 local bad = {}
@@ -492,7 +502,7 @@ local function addMembers(plugin, club, tm, values)
                 local lines = {}
                 if #res.added > 0 then
                     lines[1] = T(_("Added %1 to %2."), names(plugin, res.added), club.name)
-                    lines[2] = T(_("Tell them to choose Book club → Join a club…, with your name “%1” and the club's name “%2”."), myName(plugin), club.name)
+                    lines[2] = T(_("Tell them to choose koatsync → Book clubs → Join a club…, with your name “%1” and the club's name “%2”."), myName(plugin), club.name)
                 end
                 for _i, b in ipairs(res.bad) do
                     lines[#lines + 1] = T(_("Couldn't add “%1”: %2"), typedName(plugin, b.who), b.err.message or "?")
@@ -531,7 +541,7 @@ local function membersItems(plugin, club)
                 enabled = not (owner and me),
                 keep_menu_open = true,
                 callback = owner and not me and function(tm)
-                    confirm(T(_("Remove %1 from %2?\n\nThey stop seeing the club's book list. Books already hosted are up to each host (Book club → This book → Remove readers…)."), r.label, club.name),
+                    confirm(T(_("Remove %1 from %2?\n\nThey stop seeing the club's book list. Books already hosted are up to each host (koatsync → Reading along → Remove readers…)."), r.label, club.name),
                         _("Remove"), function()
                             run(plugin, {
                                 what = _("Removing a member"),
@@ -581,8 +591,7 @@ local function booksItems(plugin, club)
     for _i, b in ipairs(c.books or {}) do
         local mine = linked and linked.space == b.space
         items[#items + 1] = {
-            text = bookLine(b),
-            mandatory = mine and _("this book") or nil,
+            text = mine and (bookLine(b) .. " · " .. _("this book")) or bookLine(b),
             keep_menu_open = true,
             callback = function()
                 if plugin.ui.document and not plugin:isLinkedBook() then return plugin:askReadAlong(b, false) end
@@ -812,7 +821,7 @@ local function statusCard(plugin)
     elseif st.link.host then lines[#lines + 1] = T(_("Hosted by %1."), who(plugin, st.link.host)) end
     lines[#lines + 1] = T(_("Your highlights shared with it: %1."), st.space_records)
     if st.needs_move then
-        lines[#lines + 1] = T(_("Still in your public repo: %1 (Book club → This book → Move…)."), st.public_records)
+        lines[#lines + 1] = T(_("Still in your public repo: %1 (Reading along → Move public highlights…)."), st.public_records)
     end
     if st.others_refreshed_at then lines[#lines + 1] = T(_("Others' highlights fetched %1."), os.date("%Y-%m-%d %H:%M", st.others_refreshed_at)) end
     local where = ClubMenu.whereLines(plugin)
@@ -862,7 +871,7 @@ local function thisBookItems(plugin)
                 local shared = st.space_records > 0
                     and T(_("• Your %1 shared highlights and notes are deleted from the club, so the others stop seeing them."), st.space_records)
                     or _("• You haven't shared anything here yet, so nothing needs deleting.")
-                confirm(T(_("Leave %1 for “%2”?\n\n%3\n• Where you are in the book stops being shared.\n• Your highlights and notes on this device stay exactly as they are.\n• Others' highlights disappear from your pages.\n• The book is not sent to your public repo unless you turn that back on (Book club → This book)."),
+                confirm(T(_("Leave %1 for “%2”?\n\n%3\n• Where you are in the book stops being shared.\n• Your highlights and notes on this device stay exactly as they are.\n• Others' highlights disappear from your pages.\n• The book is not sent to your public repo unless you turn that back on (koatsync → Read along with a club book)."),
                     name, st.link.title or "?", shared),
                     _("Leave"), function()
                         run(plugin, {
@@ -921,57 +930,64 @@ end
 
 -- The menu ---------------------------------------------------------------------------
 
-local function topItems(plugin)
+--- Inside "Reading along: <club> ›": how it stands first, then what can be done (destructive last).
+local function linkedItems(plugin)
+    local items = {
+        {
+            text = _("How it's going"),
+            help_text = _("Who hosts it, how many of your highlights are shared, when others' highlights were last fetched, and where the others are in the book."),
+            keep_menu_open = true,
+            callback = function() statusCard(plugin) end,
+            separator = true,
+        },
+    }
+    for _i, it in ipairs(thisBookItems(plugin)) do items[#items + 1] = it end
+    return items
+end
+
+--- Rows in the koatsync menu for the open book's read-along, unlinked books included.
+local function bookEntry(plugin)
+    return {
+        text_func = function()
+            if not plugin.ui.document or not plugin:isSignedIn() then return _("Read along with a club book") end
+            if plugin:isLinkedBook() then
+                local st = plugin:clubStatus()
+                return T(_("Reading along: %1"), (st and (st.club_name or plugin:clubNameFor(st.link))) or "?")
+            end
+            local offers = plugin:clubOffers()
+            if type(offers) == "table" and #offers > 0 then
+                return T(_("Read along with %1…"), plugin:clubNameFor(offers[1].book))
+            end
+            return _("Read along with a club book")
+        end,
+        enabled_func = function() return plugin.ui.document ~= nil and plugin:isSignedIn() end,
+        sub_item_table_func = function()
+            return dynamic(function()
+                if plugin:isLinkedBook() then return linkedItems(plugin) end
+                local items = {}
+                local st = plugin:clubStatus()
+                if st and st.public_off then
+                    for _i, it in ipairs(thisBookItems(plugin)) do items[#items + 1] = it end
+                    items[#items].separator = true
+                end
+                for _i, it in ipairs(readAlongItems(plugin)) do items[#items + 1] = it end
+                return items
+            end)
+        end,
+    }
+end
+
+--- "Book clubs ›": the clubs, joining and creating; the dev switch out of the way at the end.
+local function clubsItems(plugin)
     local service = plugin:clubService()
     local items = {}
-    if not plugin:isSignedIn() then
-        return {
-            { text = _("Sign in to your PDS first…"), callback = function() plugin:showSignIn() end },
-        }
-    end
-    if plugin.ui.document then
-        if plugin:isLinkedBook() then
-            items[#items + 1] = {
-                text_func = function()
-                    local st = plugin:clubStatus()
-                    return T(_("Reading along: %1"), (st and (st.club_name or plugin:clubNameFor(st.link))) or "?")
-                end,
-                keep_menu_open = true,
-                callback = function() statusCard(plugin) end,
-            }
-            items[#items + 1] = {
-                text = _("This book"),
-                sub_item_table_func = function() return dynamic(function() return thisBookItems(plugin) end) end,
-                separator = true,
-            }
-        else
-            items[#items + 1] = {
-                text_func = function()
-                    local offers = plugin:clubOffers()
-                    if type(offers) == "table" and #offers > 0 then
-                        return T(_("Read along with %1…"), plugin:clubNameFor(offers[1].book))
-                    end
-                    return _("Read along with a club book")
-                end,
-                sub_item_table_func = function() return dynamic(function() return readAlongItems(plugin) end) end,
-            }
-            local st = plugin:clubStatus()
-            if st and st.public_off then
-                items[#items + 1] = {
-                    text = _("This book"),
-                    sub_item_table_func = function() return dynamic(function() return thisBookItems(plugin) end) end,
-                }
-            end
-            items[#items].separator = true
-        end
-    end
     for _i, club in ipairs(service:list()) do
         items[#items + 1] = {
-            text = club.name,
-            mandatory = club.role == "owner" and _("yours") or nil,
+            text = club.role == "owner" and T(_("%1 · yours"), club.name) or club.name,
             sub_item_table_func = function() return dynamic(function() return clubItems(plugin, club) end) end,
         }
     end
+    if #items > 0 then items[#items].separator = true end
     items[#items + 1] = {
         text = _("Join a club…"),
         help_text = _("Ask whoever runs the club for their name and the club's name, and to add you first."),
@@ -980,8 +996,26 @@ local function topItems(plugin)
     items[#items + 1] = {
         text = _("Create a club…"),
         callback = function() ClubMenu.createClub(plugin) end,
+        separator = true,
     }
+    items[#items + 1] = require("privacy").menu(plugin)
     return items
+end
+
+local function clubsEntry(plugin)
+    return {
+        text_func = function()
+            local n = plugin:isSignedIn() and #plugin:clubService():list() or 0
+            return n > 0 and T(_("Book clubs (%1)"), n) or _("Book clubs")
+        end,
+        enabled_func = function() return plugin:isSignedIn() end,
+        sub_item_table_func = function() return dynamic(function() return clubsItems(plugin) end) end,
+    }
+end
+
+--- The book-club rows of the koatsync menu: this book's read-along, then the clubs.
+function ClubMenu.entries(plugin)
+    return { bookEntry(plugin), clubsEntry(plugin) }
 end
 
 function ClubMenu.createClub(plugin, values)
@@ -995,24 +1029,15 @@ function ClubMenu.createClub(plugin, values)
             fn = function() return service:create(v[1]) end,
             retry = function() ClubMenu.createClub(plugin, v) end,
             done = function(club)
-                confirm(T(_("“%1” is ready.\n\nNext, add the people who read with you. They then choose Book club → Join a club…, with your name “%2” and the club's name “%1”."), club.name, myName(plugin)),
+                confirm(T(_("“%1” is ready.\n\nNext, add the people who read with you. They then choose koatsync → Book clubs → Join a club…, with your name “%2” and the club's name “%1”."), club.name, myName(plugin)),
                     _("Add members"), function() addMembers(plugin, club) end, _("Later"))
             end,
         })
     end)
 end
 
---- The "Book club" submenu.
-function ClubMenu.menu(plugin)
-    return {
-        text = _("Book club"),
-        sub_item_table_func = function() return dynamic(function() return topItems(plugin) end) end,
-        separator = true,
-    }
-end
-
 -- For tests and the dev rig.
 ClubMenu._test = { split = split, names = names, typedName = typedName, readAlongItems = readAlongItems,
-    thisBookItems = thisBookItems, clubItems = clubItems, topItems = topItems }
+    thisBookItems = thisBookItems, clubItems = clubItems, clubsItems = clubsItems, linkedItems = linkedItems }
 
 return ClubMenu

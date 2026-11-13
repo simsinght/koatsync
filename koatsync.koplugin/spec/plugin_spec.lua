@@ -34,6 +34,50 @@ do
     check("dispatcher actions", S.dispatcher.koatsync_sync_book and S.dispatcher.koatsync_sync_all and S.dispatcher.koatsync_toggle_auto)
     check("exporter registered", S.provider_registry.koatsync ~= nil)
     check("not signed in", not p:isSignedIn())
+    -- the menu's hierarchy: one page, no switches at the top, the account as an entry
+    local top = items.koatsync.sub_item_table
+    local function title(it) return it.text_func and it.text_func() or it.text end
+    local toggles, texts = 0, {}
+    for i, it in ipairs(top) do
+        if it.checked_func then toggles = toggles + 1 end
+        texts[i] = title(it)
+    end
+    check("top level fits one ZenOS page", #top <= 8, #top)
+    check("no switches at the top level", toggles == 0)
+    local account
+    for _, it in ipairs(top) do if (title(it) or ""):match("^Account") then account = it end end
+    check("account is a submenu entry, not an action", account and account.sub_item_table_func and not account.callback and not account.checked_func)
+    check("signed out: says so", account and title(account) == "Account: not signed in", account and title(account))
+    local sub = account and account.sub_item_table_func() or {}
+    check("signed out: sign-in choices inside", #sub == 2 and sub[1].text:find("Sign in", 1, true) and sub[2].text:find("from file", 1, true))
+    local reach = {}
+    local function walk(list)
+        for _, it in ipairs(list or {}) do
+            local t = title(it)
+            if t then reach[t] = true end
+            if type(it.sub_item_table) == "table" then walk(it.sub_item_table) end
+        end
+    end
+    walk(top)
+    check("sync switches still reachable", reach["Sync highlights automatically"] and reach["Sync when closing a book"] and reach["Sync pending books when Wi-Fi connects"])
+    check("others' highlights still there", reach["Others' highlights"] and reach["Show others' highlights"])
+end
+
+-- the account row once signed in
+S.reset()
+do
+    local p = signedInPlugin(S.newReaderUI("/b/dune.epub", {}))
+    local items = {}
+    p:addToMainMenu(items)
+    local account
+    for _, it in ipairs(items.koatsync.sub_item_table) do
+        local t = it.text_func and it.text_func() or it.text
+        if t and t:match("^Account") then account = it end
+    end
+    local t = account and account.text_func()
+    check("signed in: the account row names the account", t and t:match("^Account: ") and not t:find("Signed in", 1, true), t)
+    local sub = account and account.sub_item_table_func() or {}
+    check("signed in: handle, server, sign out", #sub == 3 and sub[1].text:match("^Handle: ") and sub[2].text:match("^Server: ") and sub[3].text:find("Sign out", 1, true))
 end
 
 -- 2. settle timer pushes highlights, ledger fills, dirty clears
