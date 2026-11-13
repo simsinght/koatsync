@@ -48,6 +48,7 @@ atproto spaces alpha.
 | Others' highlights on the page, re-anchored across editions, cached for offline | works |
 | "Save private" in the note editor of a club book | works |
 | Hide a person per book, spoiler-safe lists, friendlier club screens | works, being tried by the club |
+| Everyone's highlights in ZenOS's highlight list ("Mine only" / "Everyone's"), spoiler-safe | new, not yet tried on an e-reader |
 
 Looks best with [ZenOS](https://github.com/xZenLabs/zen-os). Works without it.
 

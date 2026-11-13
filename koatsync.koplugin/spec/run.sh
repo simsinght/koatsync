@@ -50,4 +50,4 @@ if [ "$1" = "progress" ]; then
     set -a; . "$ROOT/.env"; set +a
     exec luajit progress_integration.lua
 fi
-luajit harness.lua && luajit plugin_spec.lua && luajit spacecrypto_spec.lua && luajit anchor_spec.lua && luajit others_spec.lua && luajit popuplayout_spec.lua && luajit privacy_spec.lua && luajit notebutton_spec.lua && luajit club_spec.lua && luajit syncnotice_spec.lua && luajit clubprogress_spec.lua && luajit phonelogin_spec.lua
+luajit harness.lua && luajit plugin_spec.lua && luajit spacecrypto_spec.lua && luajit anchor_spec.lua && luajit others_spec.lua && luajit popuplayout_spec.lua && luajit privacy_spec.lua && luajit notebutton_spec.lua && luajit club_spec.lua && luajit syncnotice_spec.lua && luajit clubprogress_spec.lua && luajit phonelogin_spec.lua && luajit zenlist_spec.lua

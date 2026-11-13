@@ -4,6 +4,43 @@ What changed in each koatsync release, newest first. Downloads are on the
 [releases page](https://github.com/simsinght/koatsync/releases); with ZenPM, updates arrive on their
 own (see [Install with ZenPM](README.md#install-with-zenpm)).
 
+## v0.3.6 - 2026-11-12
+
+**Everyone's highlights in the highlight list.** In a book with highlights from others, ZenOS's
+highlight list (Annotations, Highlights, and those tabs of the page browser) gets a **Mine only |
+Everyone's** switch under the search icon. With Everyone's, the others' highlights are rows between
+yours, in reading order. Each row names who highlighted it, with the same dashed marker and initial
+as on the page, and says how many notes there are. Where people highlighted the same passage it is one
+row; where it is a passage you highlighted too, your row gets the names ("you, Alice, Ben") and
+otherwise works as before. Tap someone else's row to read it in full; **Go to** turns to the page and
+opens the usual names and notes there. The switch is remembered on the device. Mine only is the list
+exactly as before.
+
+<img src="https://raw.githubusercontent.com/simsinght/koatsync/main/docs/releases/v0.3.6/everyones-highlights.png" width="300" alt="ZenOS's Annotations list with a Mine only / Everyone's switch set to Everyone's: your yellow highlight with 'you, Alice Moreau, Ben Okafor, 1 note' under it, then rows of Ben's, Chloé's and Ben and Chloé's highlights, each with their dashed markers">
+
+**No spoilers.** The list only shows others' passages up to the furthest point you have read. The
+rest is one quiet row, such as "7 more from others further on". Tap it and confirm to see them in
+this list until you close it. A finished book shows everything. Passages not found in your edition
+stay a count.
+
+<img src="https://raw.githubusercontent.com/simsinght/koatsync/main/docs/releases/v0.3.6/further-on.png" width="300" alt="The end of the list: Chloé's highlight on page 38, then '7 more from others further on · tap to show' and '1 from others not in this edition'">
+
+**Search and filters.** Search also finds the others' passages, names and notes, and counts matches
+from further on without showing them. **Filter → People** keeps only some people (you included).
+Colour and style filters leave others' highlights out, as they have neither. People you hid in a
+book stay hidden here too.
+
+**Yours stay yours.** Others' highlights are only drawn in the list. They never go into KOReader's
+annotations, your sidecar file, exports, or a sync, and editing or deleting only ever applies to your
+own rows.
+
+Known limits:
+- ZenOS only. KOReader's own bookmark list is unchanged.
+- "How far you have read" starts with this version: the page you are on, your own highlights, and
+  every page you turn from now on. Pages read before updating count only once you are past them again.
+- Revealing everything in a book with many highlights from others is slower to open. ZenOS measures
+  each row of the list.
+
 ## v0.3.5 - 2026-11-12
 
 **Sign in from your phone.** **Tools → koatsync → Account → Sign in from your phone…** shows a QR

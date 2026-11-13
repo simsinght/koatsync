@@ -428,6 +428,9 @@ end
 
 local OthersPopup = {}
 
+--- A person's marker (their dashed outline and initial) as a widget, for legends elsewhere.
+OthersPopup.Marker = Marker
+
 --[[--
 Shows what a tap on others' highlights found.
 

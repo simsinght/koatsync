@@ -45,6 +45,7 @@ local Spaces = require("spaces")
 local Store = require("store")
 local Sync = require("sync")
 local SyncNotice = require("syncnotice")
+local ZenList = require("zenlist")
 
 local PLUGIN_VERSION = "0.1.0"
 
@@ -87,6 +88,8 @@ function Koatsync:init()
     self.privacy = Privacy.attach(self)
     -- A Note button next to Highlight in ZenOS's selection toolbar (notebutton.lua).
     NoteButton.attach(self)
+    -- Everyone's highlights in ZenOS's highlight list (zenlist.lua); retried when the book is ready.
+    if self.others_reader then ZenList.attach() end
 end
 
 function Koatsync:onCloseWidget()
@@ -1144,6 +1147,7 @@ end
 
 --- On opening a book: refresh stale club lists if Wi-Fi is up, then offer a matching club book.
 function Koatsync:onReaderReady()
+    if self.others_reader then ZenList.attach() end
     if not self:isSignedIn() or not self.ui.document then return end
     UIManager:unschedule(self.offer_task)
     UIManager:scheduleIn(1.5, self.offer_task)

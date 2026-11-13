@@ -465,10 +465,137 @@ function OthersReader:closeProgress()
     end
 end
 
+-- How far the reader has got (for the highlight list's spoiler cut) ------------------
+
+--[[--
+Compares two xpointers in this document: negative if `a` comes first, 0 if
+they are the same, positive if `a` comes after.
+
+Each xpointer's vertical position in the laid-out book is looked up once and
+kept (sorting a hundred highlights would otherwise parse xpointers a thousand
+times); only two on the same line are compared by crengine. Invalid ones sort
+last, in string order, so sorting never fails on them.
+]]
+function OthersReader:comparator()
+    local doc = self.ui.document
+    local ys = {}
+    local function y(xp)
+        local v = ys[xp]
+        if v == nil then
+            local ok, r = pcall(doc.getPosFromXPointer, doc, xp)
+            v = (ok and type(r) == "number") and r or math.huge
+            ys[xp] = v
+        end
+        return v
+    end
+    return function(a, b)
+        if a == b then return 0 end
+        local ya, yb = y(a), y(b)
+        if ya ~= yb then return ya < yb and -1 or 1 end
+        if ya ~= math.huge then
+            local ok, c = pcall(doc.compareXPointers, doc, a, b) -- 1 if b is after a
+            if ok and type(c) == "number" then return -c end
+        end
+        return a < b and -1 or 1
+    end
+end
+
+--- Xpointer just past what is on screen (start of the next page), or "end" on the last page.
+function OthersReader:viewEnd()
+    local doc, view = self.ui.document, self.ui.view
+    local ok, xp = pcall(function()
+        local shown = (view and view.view_mode == "page" and doc:getVisiblePageCount() > 1) and 2 or 1
+        local next_page = doc:getCurrentPage() + shown
+        if next_page > doc:getPageCount() then return "end" end
+        return doc:getPageXPointer(next_page)
+    end)
+    if ok and type(xp) == "string" and xp ~= "" then return xp end
+end
+
+-- Only books that have (or may get) others' highlights keep a furthest position.
+function OthersReader:tracksFurthest()
+    if not self.ui.doc_settings then return false end
+    local o = self.others
+    if o and (#o.placed + #o.unplaced + (o.hidden or 0)) > 0 then return true end
+    return self.plugin.isLinkedBook and self.plugin:isLinkedBook() == true
+end
+
+--[[--
+Remembers the furthest point the reader has had on screen in this book, in
+the book's koatsync sidecar state (`furthest`, an xpointer or "end"). Only
+ever moves forward; called on every page turn.
+]]
+function OthersReader:noteFurthest()
+    if not (self.ui.document and self.ui.rolling) or not self:tracksFurthest() then return end
+    local here = self:viewEnd()
+    if not here then return end
+    local state = self:bookState()
+    local was = state.furthest
+    if was == "end" or was == here then return end
+    if was and here ~= "end" and self:comparator()(here, was) <= 0 then return end
+    state.furthest = here
+    Store.saveBookState(self.ui.doc_settings, state, false)
+end
+
+function OthersReader:onPageUpdate() self:noteFurthest() end
+function OthersReader:onPosUpdate() self:noteFurthest() end
+
+--[[--
+Where the reader has read up to, for the spoiler cut in the highlight list:
+the furthest of (1) the furthest point remembered from page turns, (2) the end
+of the page on screen now, (3) the end of the reader's own last highlight.
+nil when the book is finished (marked complete, or the last page was reached):
+nothing is cut then.
+]]
+function OthersReader:furthest()
+    local ds = self.ui.doc_settings
+    local summary = ds and ds:readSetting("summary")
+    if type(summary) == "table" and summary.status == "complete" then return nil end
+    local cmp = self:comparator()
+    local best = ds and self:bookState().furthest
+    if best == "end" then return nil end
+    local here = self:viewEnd()
+    if here == "end" then return nil end
+    local function further(xp)
+        if type(xp) ~= "string" or xp == "" then return end
+        if not best or cmp(xp, best) > 0 then best = xp end
+    end
+    further(here)
+    local annotations = self.ui.annotation and self.ui.annotation.annotations or {}
+    for _, a in ipairs(annotations) do
+        if type(a) == "table" and a.drawer then further(a.pos1) end
+    end
+    return best
+end
+
 -- Taps ----------------------------------------------------------------------------
 
 local function inside(pos, r)
     return pos.x >= r.x and pos.x < r.x + r.w and pos.y >= r.y and pos.y < r.y + r.h
+end
+
+--- What a person card in the popup can do: hide them here, say where they are.
+function OthersReader:popupActions()
+    return { hide = function(person) self:hide(person) end, where = function(person) return self:whereIs(person) end }
+end
+
+--[[--
+Shows the tap popup for `items` over their passage on the page now showing
+(centred if they are not painted, e.g. with others' highlights switched off).
+Waits for the page to be painted first: used right after jumping to a passage.
+]]
+function OthersReader:showPopupFor(items, tries)
+    tries = tries or 0
+    if not self.ui.document then return end
+    local ov = self.overlay
+    if ov.shown and ov.painted_pos ~= self.ui.document:getCurrentPos() and tries < 10 then
+        UIManager:scheduleIn(0.2, function() self:showPopupFor(items, tries + 1) end)
+        return
+    end
+    local PopupLayout = require("popuplayout")
+    local rects = ov:rectsFor(items)
+    local anchor = #rects > 0 and { passage = PopupLayout.extent(rects), line = PopupLayout.extent({ rects[1] }) } or nil
+    return require("otherspopup").show(ov, items, anchor, self:popupActions())
 end
 
 function OthersReader:onOthersTap(ges)
@@ -490,7 +617,7 @@ function OthersReader:onOthersTap(ges)
         passage = PopupLayout.extent(self.overlay:rectsFor(items)),
         line = line and PopupLayout.extent({ line }),
         tap = { x = pos.x, y = pos.y },
-    }, { hide = function(person) self:hide(person) end, where = function(person) return self:whereIs(person) end })
+    }, self:popupActions())
     return true
 end
 
