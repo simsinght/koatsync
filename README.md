@@ -98,7 +98,15 @@ koatsync is not in ZenPM's built-in ZenLabs Repo yet, so it won't show up there 
 your PDS URL. Leave the URL blank if your handle resolves publicly; fill it in for a self-hosted PDS
 whose handles have no DNS of their own.
 
-To skip typing on the device, put a `koatsync_login.txt` in the KOReader folder over USB:
+To skip typing on the device, choose **Tools → koatsync → Sign in from your phone…**. The e-reader
+shows a QR code and an address; open it on a phone on the same Wi-Fi and fill in the form there. The
+e-reader serves that page itself, only while the QR code is showing (five minutes at most), and only to
+the one-time address in the code. The page is plain HTTP on your Wi-Fi; when opened from the QR code
+the form is sealed in the phone's browser with a key that never crosses the network, which keeps the
+password from anyone merely listening in, but not from someone able to tamper with your network's
+traffic.
+
+Or put a `koatsync_login.txt` in the KOReader folder over USB:
 
 ```
 handle=you.example.com
