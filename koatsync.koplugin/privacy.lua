@@ -162,21 +162,30 @@ local function pack(...) return { n = select("#", ...), ... } end
 
 --[[--
 Calls `fn(...)` with `InputDialog.new` intercepted for that call only: the first
-InputDialog built gets `decorate(spec)` (protected) before construction.
-`InputDialog.new` is restored afterwards, even if `fn` errors.
+InputDialog built gets `decorate(spec)` (protected) before construction. If
+`decorate` returns a function, it is called (protected) with the built dialog.
+`InputDialog.new` is restored afterwards, even if `fn` errors. Works for any
+widget class with a `new` (notebutton.lua uses it on ButtonDialog).
 ]]
 function Privacy.withDialogHook(InputDialog, decorate, fn, ...)
     local saved = rawget(InputDialog, "new")
     local current = InputDialog.new
     local used = false
+    local function warn(err)
+        local logger = package.loaded["logger"]
+        if logger then logger.warn("koatsync: dialog hook skipped:", err) end
+    end
     InputDialog.new = function(class, spec, ...)
         if not used and class == InputDialog and type(spec) == "table" then
             used = true
-            local ok, err = pcall(decorate, spec)
-            if not ok then
-                local logger = package.loaded["logger"]
-                if logger then logger.warn("koatsync: private save button skipped:", err) end
+            local ok, after = pcall(decorate, spec)
+            if not ok then warn(after) end
+            local dialog = current(class, spec, ...)
+            if ok and type(after) == "function" then
+                local ok2, err = pcall(after, dialog)
+                if not ok2 then warn(err) end
             end
+            return dialog
         end
         return current(class, spec, ...)
     end
@@ -241,11 +250,30 @@ function Privacy:hookNoteEditor()
         local annotation = privacy:clubAnnotationFor(this, item_or_index)
         if not annotation then return base(this, item_or_index, ...) end
         return Privacy.withDialogHook(InputDialog, function(spec)
-            Privacy.decorate(spec, Privacy.isPrivate(annotation), function(on)
+            if Privacy.decorate(spec, Privacy.isPrivate(annotation), function(on)
                 privacy:setPrivate(annotation, on, false) -- Save announces the edit itself
-            end)
+            end) then
+                return function(dialog) privacy.editor = dialog end
+            end
         end, base, this, item_or_index, ...)
     end
+end
+
+--[[--
+True while a club note editor we decorated is on screen. Sync waits for it: a
+new highlight is saved (and announced) before its note is typed, and only
+Save / Save private says whether it may go to the club at all.
+]]
+function Privacy:holdsSync()
+    local editor = self.editor
+    if editor == nil then return false end
+    local ok, UIManager = pcall(require, "ui/uimanager")
+    if ok and type(UIManager) == "table" and type(UIManager.isWidgetShown) == "function"
+            and UIManager:isWidgetShown(editor) then
+        return true
+    end
+    self.editor = nil
+    return false
 end
 
 --- The annotation a setBookmarkNote call is for, as the stock code finds it; nil outside club books.

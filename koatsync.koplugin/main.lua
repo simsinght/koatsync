@@ -36,6 +36,7 @@ local ClubMenu = require("clubmenu")
 local ClubSource = require("clubsource")
 local Clubs = require("clubs")
 local ExportTarget = require("exporter")
+local NoteButton = require("notebutton")
 local OthersReader = require("othersreader")
 local Privacy = require("privacy")
 local Records = require("records")
@@ -82,6 +83,8 @@ function Koatsync:init()
     self.others_reader = OthersReader.attach(self)
     -- "Save private" in the note editor, private/shared in the highlight menu (privacy.lua).
     self.privacy = Privacy.attach(self)
+    -- A Note button next to Highlight in ZenOS's selection toolbar (notebutton.lua).
+    NoteButton.attach(self)
 end
 
 function Koatsync:onCloseWidget()
@@ -405,6 +408,12 @@ end
 
 function Koatsync:onSettle()
     if not self.ui.document or not self:isSignedIn() then return end
+    if self.privacy and self.privacy:holdsSync() then
+        -- A club note editor is open: its Save / Save private decides whether
+        -- the (already saved) highlight may go out at all. Try again later.
+        UIManager:scheduleIn(self.store:get("settle_seconds"), self.settle_task)
+        return
+    end
     if not NetworkMgr:isWifiOn() then return end -- stays dirty; goes out later
     local counts = self:syncOpenBook()
     self:report(counts, false)
