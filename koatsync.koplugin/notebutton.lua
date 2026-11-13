@@ -48,12 +48,19 @@ function NoteButton.findHighlight(row)
     return nil
 end
 
+-- An `edit` icon file under any path: ZenOS (v4.3.2+) has its own Note button
+-- with it, even when its icon path is spelled differently from noteIcon()'s.
+local function isEditIcon(icon)
+    return type(icon) == "string" and (icon:match("/edit%.svg$") or icon:match("/edit%.png$")) ~= nil
+end
+
 --- Whether any button in `buttons` already is a note button (ours, or one with the note icon).
 function NoteButton.hasNote(buttons, note_icon)
     for _, row in ipairs(buttons) do
         if type(row) == "table" then
             for _, b in ipairs(row) do
-                if type(b) == "table" and (b.id == NoteButton.ID or (note_icon and b.icon == note_icon)) then
+                if type(b) == "table" and (b.id == NoteButton.ID
+                        or (note_icon and b.icon == note_icon) or isEditIcon(b.icon)) then
                     return true
                 end
             end

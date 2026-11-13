@@ -56,6 +56,19 @@ do
     check("idempotent: no second note button", NoteButton.decorate(spec, opts(log)) == false and #spec.buttons[1] == 6)
 end
 
+-- ZenOS v4.3.2+ has its own Note (an `edit` icon) after Highlight: left alone,
+-- even when its path is spelled differently from ours (e.g. "plugins//zenos.koplugin").
+do
+    for _, icon in ipairs({ "/x/plugins//zenos.koplugin/icons/edit.svg", "/elsewhere/icons/edit.png" }) do
+        local spec = zenSpec({})
+        table.insert(spec.buttons[1], 2, { icon = icon, callback = function() end })
+        check("native note kept, no second: " .. icon,
+            NoteButton.decorate(spec, opts({})) == false and #spec.buttons[1] == 6 and spec.buttons[1][2].icon == icon)
+    end
+    check("other icons ending in edit are not notes",
+        not NoteButton.hasNote({ { { icon = "/z/icons/settings_square_edit_outline.svg" }, { icon = "/z/icons/credit.svg" } } }))
+end
+
 -- Highlight not first (defensive): still lands right after it
 do
     local spec = { buttons = {{ { icon = "lookup.dictionary" }, { icon = "lookup.highlight" }, { icon = "lookup.search" } }} }
