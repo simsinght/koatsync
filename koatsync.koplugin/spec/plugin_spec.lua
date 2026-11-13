@@ -55,7 +55,7 @@ do
     local state = Store.bookState(ui.doc_settings)
     check("ledger has 2", state.ledger["2026-01-01 10:00:00"] and state.ledger["2026-01-01 10:00:01"])
     check("book uri kept", state.book_uri and state.book_uri:find("at.stim.reading.book", 1, true))
-    check("notified", S.notifications[#S.notifications]:find("2 new", 1, true))
+    check("automatic sync: no banner on success", #S.notifications == 0, table.concat(S.notifications, " / "))
     local rec = S.repo[state.ledger["2026-01-01 10:00:01"].uri]
     check("note in record", rec.note == "a note" and rec.book == state.book_uri)
     check("generator device", rec.generator.device == "TestDevice")
@@ -88,12 +88,61 @@ do
     S.offline = true
     p:onAnnotationsModified(); S.runTasks()
     check("network error: still dirty", #p.store:dirtyFiles() == 1)
-    check("network error: no notification spam", #S.notifications == 0, table.concat(S.notifications, " / "))
+    check("network error: told once", #S.notifications == 1 and S.notifications[1]:find("can't reach", 1, true),
+        table.concat(S.notifications, " / "))
+    p:onAnnotationsModified(); S.runTasks()
+    check("network error again: no notification spam", #S.notifications == 1, table.concat(S.notifications, " / "))
+    check("network error again: still dirty", #p.store:dirtyFiles() == 1)
     S.offline = false
     p:onNetworkConnected()
     check("connect grace scheduled", #S.tasks == 1 and S.tasks[1].at == 8)
     S.runTasks()
     check("flushed after connect", S.countRepo("at.stim.reading.highlight") == 1 and #p.store:dirtyFiles() == 0)
+end
+
+-- 3b. automatic sync failures: new kind shown, same kind once a day, reset by a success
+S.reset()
+do
+    local ann = { hl("x", "2026-01-01 10:00:00") }
+    local ui = S.newReaderUI("/b/a.epub", ann)
+    local p = signedInPlugin(ui)
+    local t = 1000000
+    p.now = function() return t end
+    local function settle() p:onAnnotationsModified(); S.runTasks() end
+    S.offline = { status = 502, message = "Bad Gateway" }
+    settle()
+    check("server error shown", #S.notifications == 1 and S.notifications[1]:find("having trouble", 1, true))
+    S.offline = { status = 503, message = "Service Unavailable" } -- other text, same kind
+    t = t + 3600; settle()
+    check("same kind within a day: quiet", #S.notifications == 1)
+    S.offline = { status = 401, error = "AuthenticationRequired", message = "Invalid identifier or password" }
+    t = t + 60; settle()
+    check("new kind shown at once", #S.notifications == 2 and S.notifications[2]:find("sign in again", 1, true))
+    t = t + 23 * 3600; settle()
+    check("auth again within a day: quiet", #S.notifications == 2)
+    t = t + 3600; settle()
+    check("auth again after a day: shown", #S.notifications == 3)
+    check("persisted in the settings store", p.store:get("auto_sync_notice").kind == "auth")
+    check("failures leave the book dirty", #p.store:dirtyFiles() == 1 and S.countRepo("at.stim.reading.highlight") == 0)
+    -- a restart keeps the state
+    local p2 = Koatsync:new{ ui = ui }; p2:init(); p2.now = function() return t + 60 end
+    p2:onAnnotationsModified(); S.runTasks()
+    check("after restart: same kind still quiet", #S.notifications == 3)
+    S.offline = false
+    settle()
+    check("success: quiet and synced", #S.notifications == 3 and S.countRepo("at.stim.reading.highlight") == 1)
+    check("success resets", p.store:get("auto_sync_notice") == nil)
+    S.offline = { status = 401, error = "AuthenticationRequired", message = "x" }
+    ann[1].note = "edited"
+    t = t + 120; settle()
+    check("first failure after recovery shown", #S.notifications == 4)
+    -- a manual sync still reports, failure and success
+    p:onKoatsyncSyncBook()
+    check("manual failure alerts", S.shown[#S.shown].text and S.shown[#S.shown].text:find("Sign in again", 1, true),
+        S.shown[#S.shown].text)
+    S.offline = false
+    p:onKoatsyncSyncBook()
+    check("manual success notifies", S.notifications[#S.notifications]:find("1 updated", 1, true), S.notifications[#S.notifications])
 end
 
 -- 4. close-of-book sync and auto_sync off

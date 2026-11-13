@@ -43,6 +43,7 @@ local Records = require("records")
 local Spaces = require("spaces")
 local Store = require("store")
 local Sync = require("sync")
+local SyncNotice = require("syncnotice")
 
 local PLUGIN_VERSION = "0.1.0"
 
@@ -416,7 +417,7 @@ function Koatsync:onSettle()
     end
     if not NetworkMgr:isWifiOn() then return end -- stays dirty; goes out later
     local counts = self:syncOpenBook()
-    self:report(counts, false)
+    self:reportAuto(counts)
 end
 
 function Koatsync:onCloseDocument()
@@ -548,6 +549,8 @@ function Koatsync:afterSync(file, counts, is_open)
     else
         self.store:clearDirty(file)
         self.store:set("last_sync", os.time())
+        -- Working again: the next automatic sync failure is news (syncnotice.lua).
+        if self.store:get(SyncNotice.KEY) ~= nil then self.store:set(SyncNotice.KEY, nil) end
         self.store:flush()
         -- Others may have written meanwhile: refresh the overlay of a linked open book.
         if is_open and self.others_reader and self:isLinkedBook() and NetworkMgr:isWifiOn() then
@@ -608,6 +611,28 @@ function Koatsync:report(counts, interactive)
     if counts.updated > 0 then parts[#parts + 1] = T(_("%1 updated"), counts.updated) end
     if counts.deleted > 0 then parts[#parts + 1] = T(_("%1 removed"), counts.deleted) end
     self:notify("koatsync: " .. table.concat(parts, ", "))
+end
+
+--[[--
+The outcome of the sync a few seconds after each highlight (onSettle): quiet on
+success; a failure only when it is news, by SyncNotice.decide (a new kind of
+failure, or the same kind a day later). The book stays dirty either way.
+]]
+function Koatsync:reportAuto(counts)
+    if not counts.err then return end
+    local show, kind, state = SyncNotice.decide(self.store:get(SyncNotice.KEY), counts.err, self:now())
+    if not show then
+        logger.info("koatsync: automatic sync failed again (" .. kind .. "), not shown")
+        return
+    end
+    self.store:set(SyncNotice.KEY, state)
+    self.store:flush()
+    self:notify(SyncNotice.message(kind))
+end
+
+--- Wall-clock seconds (a method so the specs can move time).
+function Koatsync:now()
+    return os.time()
 end
 
 -- Book clubs -------------------------------------------------------------------

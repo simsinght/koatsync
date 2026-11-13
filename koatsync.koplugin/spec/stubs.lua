@@ -96,7 +96,11 @@ function Fake:login(handle, password)
     if self.on_session then self.on_session(self) end
     return { did = self.did, handle = handle }
 end
-local function guard() if S.offline then return { message = "connection refused" } end end
+-- S.offline = true fails like a dead network; a table is returned as the error itself.
+local function guard()
+    if type(S.offline) == "table" then return S.offline end
+    if S.offline then return { message = "connection refused" } end
+end
 function Fake:createRecord(collection, record)
     S.calls[#S.calls + 1] = "create"
     local e = guard(); if e then return nil, e end
