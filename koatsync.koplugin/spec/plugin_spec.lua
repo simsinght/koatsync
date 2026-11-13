@@ -49,7 +49,9 @@ do
     check("account is a submenu entry, not an action", account and account.sub_item_table_func and not account.callback and not account.checked_func)
     check("signed out: says so", account and title(account) == "Account: not signed in", account and title(account))
     local sub = account and account.sub_item_table_func() or {}
-    check("signed out: sign-in choices inside", #sub == 2 and sub[1].text:find("Sign in", 1, true) and sub[2].text:find("from file", 1, true))
+    check("signed out: sign-in choices inside, phone first", #sub == 3 and sub[1].text:find("from your phone", 1, true)
+        and sub[2].text:find("handle and password", 1, true) and sub[3].text:find("from file", 1, true),
+        table.concat((function() local t = {} for i, it in ipairs(sub) do t[i] = tostring(it.text) end return t end)(), " | "))
     local reach = {}
     local function walk(list)
         for _, it in ipairs(list or {}) do

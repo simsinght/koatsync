@@ -103,7 +103,7 @@ Book clubs ›                 your clubs, join or create one
 Others' highlights ›         show/hide, hidden people, where the others are, refresh
 Sync this book now
 Syncing: 2 books waiting ›   sync the waiting books, the automatic-sync switches, last sync
-Account: sam ›               handle, server, sign out (or sign in)
+Account: sam ›               handle, server, sign out (or sign in: phone, typed, file)
 About koatsync
 ```
 
@@ -112,22 +112,32 @@ titles. Rarely used and destructive steps sit one level deeper and ask first.
 
 ## Sign in
 
-**Tools → koatsync → Account → Sign in with an app password…** asks for your handle, an app password, and optionally
-your PDS URL. Leave the URL blank if your handle resolves publicly; fill it in for a self-hosted PDS
-whose handles have no DNS of their own.
+The easiest way on an e-reader: **Tools → koatsync → Account → Sign in from your phone…**. The
+e-reader shows a QR code and an address; open it on a phone on the same Wi-Fi and fill in the form
+there. The e-reader serves that page itself, only while the QR code is showing (five minutes at most),
+and only to the one-time address in the code. The page is plain HTTP on your Wi-Fi; when opened from
+the QR code the form is sealed in the phone's browser with a key that never crosses the network, which
+keeps the password from anyone merely listening in, but not from someone able to tamper with your
+network's traffic.
 
-To skip typing on the device, put a `koatsync_login.txt` in the KOReader folder over USB:
+**Account → Sign in with handle and password…** asks for the same on the device: your handle, your
+password, and optionally your PDS URL. Leave the URL blank if your handle resolves publicly; fill it in
+for a self-hosted PDS whose handles have no DNS of their own.
+
+Or put a `koatsync_login.txt` in the KOReader folder over USB:
 
 ```
 handle=you.example.com
-password=your-app-password
+password=your-password
 pds=https://pds.example.com   # optional
 ```
 
 then choose **Tools → koatsync → Account → Sign in from file…**. The file is deleted once the sign-in succeeds.
 
-The app password is stored in KOReader's settings directory in plain text, the same way KOReader's own
-progress sync stores its password. Use an app password, never your account password.
+Either your account password or an app password works. With an app password koatsync syncs and
+shares, but can't show other club members' highlights yet: reading them needs one call that the PDS
+only allows with the full account password. The password is stored in KOReader's settings directory
+in plain text, the same way KOReader's own progress sync stores its password.
 
 ## Syncing
 

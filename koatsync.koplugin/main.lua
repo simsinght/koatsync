@@ -93,6 +93,7 @@ function Koatsync:onCloseWidget()
     UIManager:unschedule(self.settle_task)
     UIManager:unschedule(self.connect_task)
     UIManager:unschedule(self.offer_task)
+    if package.loaded["phoneloginui"] then package.loaded["phoneloginui"].stop() end
     ExportTarget:detach(self)
     local unregister = rawget(_G, "__ZENOS_UNREGISTER_STATUS_ITEM")
     if type(unregister) == "function" then unregister("koatsync.pending") end
@@ -127,7 +128,8 @@ function Koatsync:showSignIn()
         title = _("Sign in to your PDS"),
         fields = {
             { text = a.handle or "", hint = _("Handle (e.g. you.example.com)") },
-            { text = "", hint = _("App password"), text_type = "password" },
+            { text = "", hint = _("Password"), text_type = "password",
+              description = _("Your account password, or an app password. With an app password koatsync syncs and shares, but can't show other club members' highlights yet.") },
             { text = a.pds or "", hint = _("PDS URL (optional, e.g. https://pds.example.com)") },
         },
         buttons = {{
@@ -146,27 +148,42 @@ function Koatsync:showSignIn()
     dialog:onShowKeyboard()
 end
 
-function Koatsync:signIn(handle, password, pds)
-    local done = self:busy(_("Signing in…"))
+--- Finds the account's PDS and logs in. Returns the session, or nil and a message to show. Network.
+function Koatsync:authenticate(handle, password, pds)
     local did, err = Client.resolveHandle(handle, pds)
-    if not did then done(); return self:alert(T(_("Could not resolve %1: %2"), handle, err or "?")) end
+    if not did then return nil, T(_("Could not resolve %1: %2"), handle, err or "?") end
     if not pds then
         pds, err = Client.resolveDid(did)
-        if not pds then done(); return self:alert(T(_("Could not find a PDS for %1: %2"), did, err or "?")) end
+        if not pds then return nil, T(_("Could not find a PDS for %1: %2"), did, err or "?") end
     end
     self.client.pds = pds
     self.client.handle = handle
     local session, lerr = self.client:login(handle, password)
-    done()
-    if not session then
-        return self:alert(T(_("Sign-in failed: %1"), lerr.message or "?"))
-    end
+    if not session then return nil, T(_("Sign-in failed: %1"), lerr.message or "?") end
     -- login() persists through on_session; make sure the PDS went with it.
     local a = self.store:account()
     a.pds = pds
     self.store:setAccount(a)
     self.ctx.client = self.client
+    return session
+end
+
+function Koatsync:signIn(handle, password, pds)
+    local done = self:busy(_("Signing in…"))
+    local session, err = self:authenticate(handle, password, pds)
+    done()
+    if not session then return self:alert(err) end
     self:notify(T(_("Signed in as %1"), session.handle or handle))
+end
+
+--[[--
+Shows a QR code; the phone that scans it gets a sign-in form served by the
+e-reader over the Wi-Fi (phoneloginui.lua, loaded on demand).
+]]
+function Koatsync:signInFromPhone()
+    self:online(_("Signing in from your phone"), function()
+        require("phoneloginui").start(self)
+    end)
 end
 
 Koatsync.LOGIN_FILE = "koatsync_login.txt"
@@ -174,7 +191,7 @@ Koatsync.LOGIN_FILE = "koatsync_login.txt"
 --[[--
 Typing on an e-reader is painful, so credentials can arrive as a file dropped
 into the KOReader folder over USB. The file is removed once the sign-in worked,
-so an app password does not sit around in plain text longer than it has to.
+so a password does not sit around in plain text longer than it has to.
 ]]
 function Koatsync:signInFromFile()
     local path = DataStorage:getDataDir() .. "/" .. Koatsync.LOGIN_FILE
@@ -270,7 +287,7 @@ The koatsync menu, grouped by what people do (one ZenOS page, no scrolling):
     Sync this book now
     Syncing: <state> ›          pending books, the automatic-sync toggles, sync status
     ─────
-    Account: <name> ›           (or "Account: not signed in ›") sign in / sign out
+    Account: <name> ›           (or "Account: not signed in ›") sign in (phone, typed, file) / sign out
     About koatsync
 
 Toggles only live inside submenus, next to what they switch; statuses are in
@@ -321,14 +338,25 @@ function Koatsync:accountMenu()
         end,
         sub_item_table_func = function()
             if not self:isSignedIn() then
+                -- Inert once signed in, in case this page outlives the sign-in (a phone sign-in finishes behind it).
+                local function signed_out() return not self:isSignedIn() end
                 return {
                     {
-                        text = _("Sign in with an app password…"),
+                        text = _("Sign in from your phone…"),
+                        help_text = _("Shows a QR code. Scan it with a phone on the same Wi-Fi and type your handle and password there; the e-reader signs in."),
+                        enabled_func = signed_out,
+                        keep_menu_open = true,
+                        callback = function() self:signInFromPhone() end,
+                    },
+                    {
+                        text = _("Sign in with handle and password…"),
+                        enabled_func = signed_out,
                         callback = function() self:showSignIn() end,
                     },
                     {
                         text = _("Sign in from file…"),
                         help_text = _("Reads koatsync_login.txt from the KOReader folder (lines: handle=…, password=…, and optionally pds=https://…), signs in, then deletes the file."),
+                        enabled_func = signed_out,
                         keep_menu_open = true,
                         callback = function() self:signInFromFile() end,
                     },
