@@ -10,7 +10,15 @@
 <p align="center">
   <em>a book club in the margins.</em><br>
   your <a href="https://koreader.rocks/">KOReader</a> highlights, kept on your own
-  <a href="https://atproto.com/">AT Protocol</a> PDS, and shared with the people you read with.
+  <a href="https://atproto.com/">atproto</a> PDS, and shared with your book club through atproto spaces.
+</p>
+
+<p align="center">
+  <img src="docs/readme-page.png" width="45%"
+       alt="A page of Pride and Prejudice with three club members' highlights outlined in the text, and a popup showing who marked the opening line and one member's note">
+  &nbsp;
+  <img src="docs/readme-list.png" width="45%"
+       alt="The highlights list switched to Everyone's, showing each passage with the names of the club members who highlighted it and their notes">
 </p>
 
 ---
@@ -48,7 +56,7 @@ atproto spaces alpha.
 | Others' highlights on the page, re-anchored across editions, cached for offline | works |
 | "Save private" in the note editor of a club book | works |
 | Hide a person per book, spoiler-safe lists, friendlier club screens | works, being tried by the club |
-| Everyone's highlights in ZenOS's highlight list ("Mine only" / "Everyone's"), spoiler-safe | new, not yet tried on an e-reader |
+| Everyone's highlights in ZenOS's highlight list ("Mine" / "Everyone's"), spoiler-safe | new, not yet tried on an e-reader |
 
 Looks best with [ZenOS](https://github.com/xZenLabs/zen-os). Works without it.
 
