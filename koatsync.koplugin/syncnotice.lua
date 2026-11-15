@@ -7,6 +7,13 @@ failure of a different kind than the last one shown is shown at once; the same
 kind again at most once a day. A successful sync forgets the last one shown, so
 the first failure after a recovery is news again.
 
+Network failures are never shown at all: being offline (no signal on a train,
+a captive portal, a dead hotspot) is normal for an e-reader, the work simply
+stays pending, and nothing the reader could do about it is worth a banner.
+They leave the last one shown alone, so they don't reset the other kinds'
+once-a-day clock either. Syncs the reader asked for report through
+main.lua's `report` instead, network failures included.
+
 Errors are grouped into stable kinds rather than compared by message, since
 the wording of a network or server error varies from one try to the next.
 Errors come from atproto.lua (`{ status, error, message }`, status nil when the
@@ -28,7 +35,7 @@ SyncNotice.KEY = "auto_sync_notice"
 --- The same kind of failure is shown again after this long.
 SyncNotice.REPEAT_SECONDS = 24 * 60 * 60
 
-SyncNotice.NETWORK = "network" -- no answer: offline, DNS, timeout, refused
+SyncNotice.NETWORK = "network" -- no answer: offline, DNS, timeout, refused, TLS, captive portal
 SyncNotice.AUTH = "auth"       -- signed out on the server: token and app password refused
 SyncNotice.SERVER = "server"   -- the PDS answered with a 5xx, or is rate limiting
 SyncNotice.OTHER = "other"     -- anything else (a refused request, a bad space record…)
@@ -56,6 +63,10 @@ function SyncNotice.classify(err)
         if code == nil then return SyncNotice.NETWORK end
         return SyncNotice.OTHER
     end
+    -- XRPC never redirects and a PDS never asks for proxy auth: an answer like that
+    -- comes from whatever sits in between, typically a hotel or train Wi-Fi login page
+    -- (511 is "network authentication required").
+    if (status >= 300 and status < 400) or status == 407 or status == 511 then return SyncNotice.NETWORK end
     if status >= 500 or status == 429 then return SyncNotice.SERVER end
     return SyncNotice.OTHER
 end
@@ -66,12 +77,13 @@ Decides whether to show an automatic sync failure.
 @param last the stored { kind, at } of the last failure shown, or nil
 @param err the sync error
 @param now seconds (os.time())
-@treturn boolean show
+@treturn boolean show (never for a network failure)
 @treturn string kind
 @treturn table|nil what to store: the new { kind, at } when shown, else `last`
 ]]
 function SyncNotice.decide(last, err, now)
     local kind = SyncNotice.classify(err)
+    if kind == SyncNotice.NETWORK then return false, kind, last end
     local show = type(last) ~= "table" or last.kind ~= kind or type(last.at) ~= "number"
         or now < last.at -- the clock went back (a reset device clock): don't stay quiet for ages
         or now - last.at >= SyncNotice.REPEAT_SECONDS
@@ -79,9 +91,8 @@ function SyncNotice.decide(last, err, now)
     return false, kind, last
 end
 
---- What to say for each kind.
+--- What to say for each kind shown (network failures never are).
 SyncNotice.TEXT = {
-    network = _("koatsync: can't reach your PDS. Your highlights will go out later."),
     auth = _("koatsync: sign in again under Tools → koatsync → Account to keep syncing highlights."),
     server = _("koatsync: your PDS is having trouble. Your highlights will go out later."),
     other = _("koatsync: highlights couldn't be synced. They'll go out with the next sync."),

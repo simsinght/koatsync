@@ -271,6 +271,18 @@ function Koatsync:online(what, fn)
     })
 end
 
+--[[--
+Whether automatic work (the settle sync, sync on close or on connect, others'
+refresh, the club book check) should try the network now: Wi-Fi on *and* an
+address on the interface. Both are cheap local checks on a device (sysfs and
+getifaddrs), unlike `isOnline`, which does a DNS lookup that can stall a page
+turn while offline. Never prompts and never turns Wi-Fi on; when this says no,
+the work stays pending for the next automatic sync.
+]]
+function Koatsync:connected()
+    return NetworkMgr:isWifiOn() and NetworkMgr:isConnected() and true or false
+end
+
 --- What to call someone (Club.label): display name, else a short handle; never a DID. No network.
 function Koatsync:personLabel(did_or_person)
     local p = did_or_person
@@ -525,7 +537,7 @@ function Koatsync:onSettle()
         UIManager:scheduleIn(self.store:get("settle_seconds"), self.settle_task)
         return
     end
-    if not NetworkMgr:isWifiOn() then return end -- stays dirty; goes out later
+    if not self:connected() then return end -- stays dirty; goes out later
     local counts = self:syncOpenBook()
     self:reportAuto(counts)
 end
@@ -542,7 +554,7 @@ function Koatsync:onCloseDocument()
     -- Depending on how the reader is closed, KOReader may already have
     -- written the sidecar, so what changed here has to be flushed too.
     local noted = self:noteProgress()
-    if not self.store:get("sync_on_close") or not NetworkMgr:isWifiOn() then
+    if not self.store:get("sync_on_close") or not self:connected() then
         if noted then self.ui.doc_settings:flush() end
         return
     end
@@ -679,7 +691,7 @@ function Koatsync:afterSync(file, counts, is_open)
         if self.store:get(SyncNotice.KEY) ~= nil then self.store:set(SyncNotice.KEY, nil) end
         self.store:flush()
         -- Others may have written meanwhile: refresh the overlay of a linked open book.
-        if is_open and self.others_reader and self:isLinkedBook() and NetworkMgr:isWifiOn() then
+        if is_open and self.others_reader and self:isLinkedBook() and self:connected() then
             self.others_reader:scheduleRefresh(1)
         end
     end
@@ -693,7 +705,7 @@ function Koatsync:flushDirty(interactive)
         if interactive then self:notify(_("koatsync: nothing pending")) end
         return
     end
-    if not interactive and not NetworkMgr:isWifiOn() then return end
+    if not interactive and not self:connected() then return end
     local done = interactive and self:busy(T(_("Syncing %1 book(s)…"), #files)) or function() end
     local total = { created = 0, updated = 0, deleted = 0 }
     local failed, first_err = 0, nil
@@ -748,8 +760,8 @@ end
 The outcome of every sync the reader did not ask for (a few seconds after each
 highlight, on closing a book, when Wi-Fi connects): quiet on success; a failure
 only when it is news, by SyncNotice.decide (a new kind of failure, or the same
-kind a day later). The book stays dirty either way. Manual syncs and the
-export target use `report` instead.
+kind a day later; never a network failure: offline is normal). The book stays
+dirty either way. Manual syncs and the export target use `report` instead.
 ]]
 function Koatsync:reportAuto(counts)
     if not counts.err then return end
@@ -1254,7 +1266,7 @@ end
 function Koatsync:offerReadAlong()
     if not self.ui.document or not self:isSignedIn() or self:isLinkedBook() then return end
     local service = self:clubService()
-    if NetworkMgr:isWifiOn() then
+    if self:connected() then
         -- TTL-gated; say so when it is going to take a moment.
         local stale = {}
         for _, c in ipairs(service:list()) do

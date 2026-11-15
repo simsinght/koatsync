@@ -217,7 +217,8 @@ local function fakeViewer(Annotations, log)
         session:refreshCurrent()
         local items = {}
         for i, r in ipairs(session:items(kind)) do items[i] = { record = r } end
-        return { item_table = items, title_bar = { title = "Annotations (" .. #items .. ")" } }
+        return { item_table = items, title_bar = { title = "Annotations (" .. #items .. ")",
+            setTitle = function(self, t) self.title = t end } }
     end
     -- What ZenOS's own details/actions would do: edit, delete, add note (all native).
     function V.showDetails(pbw, record) log[#log + 1] = "zen-details:" .. tostring(record.text) end
@@ -273,7 +274,7 @@ local function fixture(opts)
     local ui
     local reader = {
         others = { placed = placed, unplaced = opts.unplaced or { {} }, hidden = 0 },
-        plugin = { store = store },
+        plugin = { store = store, isLinkedBook = opts.linked and function() return true end or nil },
         overlay = {},
         comparator = function() return cmp end,
         furthest = function() return opts.furthest end,
@@ -338,6 +339,67 @@ do
     check("file browser (no book): passthrough", ZenList.context(no_ui, "annotations") == nil)
 end
 
+-- Building: a read-along book nobody else has highlighted in yet --------------------------------
+
+do
+    local V, A, log = install()
+    local toggles = {}
+    local saved_toggle = ZenList.addToggle
+    ZenList.addToggle = function(ctx) toggles[#toggles + 1] = ctx.everyone end
+    local function kinds(menu)
+        local out = {}
+        for i, it in ipairs(menu.item_table) do
+            local ks = rawget(it.record, "koatsync")
+            out[i] = ks and ks.kind or "plain"
+        end
+        return table.concat(out, ",")
+    end
+    local f = fixture({ placed = {}, unplaced = {}, linked = true })
+    local anns_before = deepcopy(f.ui.annotation.annotations)
+    local ds_before = deepcopy(f.ds_data)
+    local menu = V.build(f.pbw, "highlights")
+    check("read-along, no others: switch shown", #toggles == 1 and toggles[1] == true and f.pbw._koatsync_ctx ~= nil)
+    check("read-along, no others: one quiet line first, own rows as before", kinds(menu) == "none,plain,plain", kinds(menu))
+    local line = menu.item_table[1].record
+    check("read-along, no others: the line says so", line.note == "No one else has highlighted in this book yet"
+        and line.text == "" and line.annotation == nil, line.note)
+    check("read-along, no others: count is the reader's own", menu.title_bar.title == "Annotations (2)", menu.title_bar.title)
+    check("read-along, no others: annotations and sidecar untouched", same(anns_before, f.ui.annotation.annotations)
+        and same(ds_before, f.ds_data))
+    local session = f.pbw._zen_annotations
+    session.query = "mine"
+    check("read-along, no others: line hidden while searching", not kinds({ item_table = (function()
+        local t = {}
+        for i, r in ipairs(session:items("highlights")) do t[i] = { record = r } end
+        return t
+    end)() }):find("none"))
+    session.query = ""
+    for i = #log, 1, -1 do log[i] = nil end
+    V.showDetails(f.pbw, line)
+    V.showActions(f.pbw, line)
+    check("read-along, no others: the line never reaches ZenOS's actions", #log == 0, table.concat(log, ","))
+    check("read-along, no others: bookmarks tab untouched", #V.build(f.pbw, "bookmarks").item_table == 0
+        and f.pbw._koatsync_ctx == nil)
+
+    f.store:set(ZenList.SETTING, false)
+    toggles = {}
+    local mine = V.build(f.pbw, "highlights")
+    check("read-along, no others, mine: switch shown, no line", #toggles == 1 and toggles[1] == false
+        and kinds(mine) == "plain,plain" and mine.title_bar.title == "Annotations (2)", kinds(mine))
+
+    toggles = {}
+    local g = fixture({ placed = {}, unplaced = {} })
+    local m2 = V.build(g.pbw, "highlights")
+    check("not read-along, no others: no switch, no line", #toggles == 0 and g.pbw._koatsync_ctx == nil
+        and kinds(m2) == "plain,plain", kinds(m2))
+
+    toggles = {}
+    local h = fixture({ furthest = xp(500), linked = true })
+    local m3 = V.build(h.pbw, "annotations")
+    check("read-along with others: no nobody-yet line", #toggles == 1 and not kinds(m3):find("none"), kinds(m3))
+    ZenList.addToggle = saved_toggle
+end
+
 -- Building: everyone's ---------------------------------------------------------------------------
 
 do
@@ -369,12 +431,12 @@ do
     check("sidecar holds nothing of the others'", not blob:find("did:plc:") and not blob:find("Mrs Bennet")
         and not blob:find("at://") and not blob:find("twist"))
 
-    -- Mine only: ZenOS's list exactly
+    -- Mine: ZenOS's list exactly
     f.store:set(ZenList.SETTING, false)
     local mine = V.build(f.pbw, "annotations")
     local plain = true
     for _, it in ipairs(mine.item_table) do if rawget(it.record, "koatsync") then plain = false end end
-    check("mine only: just the reader's own rows, undecorated", #mine.item_table == 2 and plain)
+    check("mine: just the reader's own rows, undecorated", #mine.item_table == 2 and plain)
     f.store:set(ZenList.SETTING, true)
 
     -- Reveal
@@ -564,7 +626,7 @@ do
     V.showFilters(f.pbw)
     texts = {}
     for _, row in ipairs(built.buttons) do texts[#texts + 1] = row[1].text end
-    check("filters: mine only, ZenOS's menu as it is", not table.concat(texts, ","):find("People"))
+    check("filters: mine, ZenOS's menu as it is", not table.concat(texts, ","):find("People"))
     package.loaded["common/ui/zen_anchored_menu"] = nil
 end
 
@@ -613,6 +675,90 @@ do
     ds_data.koatsync = nil; ds_data.summary = nil
     quiet:noteFurthest()
     check("furthest: books without others keep nothing", ds_data.koatsync == nil)
+end
+
+-- The control in the title bar ---------------------------------------------------------------
+
+do
+    check("control: labels", ZenList.TEXT.mine == "Mine" and ZenList.TEXT.everyone == "Everyone's")
+    -- Geometry modules the placement uses (fakes; real widgets are checked in the Mac rig).
+    local saved_pre = {}
+    for name, mod in pairs({
+        ["ui/font"] = { getFace = function() return {} end },
+        ["ui/geometry"] = { new = function(_, o) return o end },
+        ["ui/size"] = { padding = { large = 10 } },
+    }) do
+        saved_pre[name] = { package.preload[name], package.loaded[name] }
+        package.loaded[name] = nil
+        package.preload[name] = function() return mod end
+    end
+    local widths = { full = 300, compact = 260, single = 140 }
+    local saved_new = ZenList.newToggle
+    local made = {}
+    ZenList.newToggle = function(o)
+        local t = { variant = o.variant, everyone = o.everyone, tap_range = o.tap_range, inset_left = 0, inset_right = 0 }
+        t.h = math.min(44, o.max_h or 44)
+        t.getSize = function() return { w = widths[o.variant], h = t.h } end
+        t.dimen = { x = 0, y = 0, w = widths[o.variant], h = t.h } -- placed on paint
+        t.free = function() t.freed = true end
+        made[#made + 1] = t
+        return t
+    end
+    local function size(w, h) return { getSize = function() return { w = w, h = h } end } end
+    local function titleBar(width, title_w, sub)
+        local tb = { width = width, titlebar_height = 117, dimen = { x = 0, y = 75, w = width, h = 117 },
+            title_widget = size(title_w, 60), title_group = { size(width, 12) },
+            _zen_search = { overlap_offset = { width - 260, 0 }, getSize = function() return { w = 88, h = 128 } end } }
+        if sub then
+            tb._zen_subtitle = { overlap_offset = { 20, 93 }, getSize = function() return { w = 400, h = 66 } end,
+                setMaxWidth = function(self, w) self.max_width = w end }
+            tb.titlebar_height, tb.dimen.h = 238, 238
+        end
+        tb[1] = tb.title_group
+        return tb
+    end
+    local function ctx() return { everyone = true, metrics = { side = 40 }, pbw = {} } end
+
+    -- Title row (ZenOS hides the book line): left of the title, inside the title's line.
+    local tb = titleBar(1196, 260)
+    local t = ZenList.addToggle(ctx(), { title_bar = tb })
+    local title_left = math.floor((1196 - 260) / 2)
+    check("control: title row, full variant when there is room", t and t.variant == "full", t and t.variant)
+    check("control: title row, header height unchanged", tb.titlebar_height == 117 and tb.dimen.h == 117)
+    check("control: title row, inside the title's line",
+        t.overlap_offset[2] >= 12 and t.overlap_offset[2] + t.h <= 12 + 60, t.overlap_offset[2])
+    check("control: title row, at the list's left edge", t.overlap_offset[1] == 40, t.overlap_offset[1])
+    check("control: title row, clear of the title", t.overlap_offset[1] + 300 < title_left, title_left)
+    check("control: first child (its taps win over the icons' tall tap zones)", tb[1] == t)
+    local r = t.tap_range()
+    check("control: title row tap zone is the whole row, not just the drawn words",
+        r.y == 75 and r.h == 117 and r.w > 300, r.y .. "/" .. r.h)
+
+    -- Narrow screen, long title: tighter, then only the current choice.
+    made = {}
+    tb = titleBar(700, 330)
+    t = ZenList.addToggle(ctx(), { title_bar = tb })
+    title_left = math.floor((700 - 330) / 2)
+    check("control: narrow, falls back to the single label", t.variant == "single" and made[1].freed and made[2].freed,
+        t.variant)
+    check("control: narrow, still clear of the title", t.overlap_offset[1] + 140 < title_left)
+    check("control: narrow, header height unchanged", tb.titlebar_height == 117 and tb.dimen.h == 117)
+    tb = titleBar(1000, 330)
+    t = ZenList.addToggle(ctx(), { title_bar = tb })
+    check("control: a little narrower, compact padding first", t.variant == "compact", t.variant)
+
+    -- Book line under the title: right end of that line, inside it.
+    tb = titleBar(1196, 260, true)
+    t = ZenList.addToggle(ctx(), { title_bar = tb })
+    check("control: book line, right end", t.overlap_offset[1] == 1196 - 40 - 300, t.overlap_offset[1])
+    check("control: book line, inside that line", t.overlap_offset[2] >= 93 and t.overlap_offset[2] + t.h <= 93 + 66)
+    check("control: book line, book title shortened to make room", tb._zen_subtitle.max_width == 1196 - 120 - 300)
+    check("control: book line, header height unchanged", tb.titlebar_height == 238 and tb.dimen.h == 238)
+    r = t.tap_range()
+    check("control: book line tap zone is that line", r.y == 75 + 93 and r.h == 66)
+
+    ZenList.newToggle = saved_new
+    for name, v in pairs(saved_pre) do package.preload[name], package.loaded[name] = v[1], v[2] end
 end
 
 print(string.format("zenlist: %d passed, %d failed", passed, failed))

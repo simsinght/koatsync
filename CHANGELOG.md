@@ -4,6 +4,34 @@ What changed in each koatsync release, newest first. Downloads are on the
 [releases page](https://github.com/simsinght/koatsync/releases); with ZenPM, updates arrive on their
 own (see [Install with ZenPM](README.md#install-with-zenpm)).
 
+## v0.3.7 - 2026-11-15
+
+**A lighter Mine | Everyone's switch.** The switch in ZenOS's highlight list is now two plain words,
+**Mine** and **Everyone's**, with the chosen one in a small black pill. It sits on the title's own
+line, so the header is no taller than it is without the switch and no highlight rows are lost to
+it. On a narrow screen, or with a long title, it tightens and then becomes a single word you tap to
+switch. With ZenOS's book title line shown, taps on the top half of the switch were being taken by
+the icons above it; they now reach the switch.
+
+<img src="https://raw.githubusercontent.com/simsinght/koatsync/main/docs/releases/v0.3.7/mine-everyones.png" width="300" alt="ZenOS's Highlights list with the words Mine and Everyone's to the left of the title, Everyone's in a black pill, and rows of club members' highlights below">
+
+**The switch is there before anyone else has highlighted.** In a book you are reading along, the
+switch now shows even when nobody else has a highlight yet, and Everyone's carries one quiet line,
+"No one else has highlighted in this book yet". The line is not counted in the title and hides
+while you search or filter. Books that are not read-alongs are unchanged.
+
+**No "couldn't sync" when you are offline.** Being without a connection is not an error.
+Automatic syncs (after a highlight, on closing a book, when Wi-Fi connects) now check that the
+device is actually connected, not only that the radio is on, and otherwise do nothing: no attempt,
+no wait for a timeout, no notice, and no prompt to turn Wi-Fi on. If a sync does fail on the network
+(a timeout, a Wi-Fi login page answering in place of your PDS), it is never shown; your highlights
+stay pending and go out with the next sync. Sign-in and server failures are still shown once per
+kind and then at most once a day. Anything you tap, such as **Sync this book now**, still tells
+you plainly when it fails, network included.
+
+**Quieter book open when offline.** "Checking your clubs for new books…" and the "highlights from
+others" notice after a failed background refresh no longer appear without a connection.
+
 ## v0.3.6 - 2026-11-12
 
 **Everyone's highlights in the highlight list.** In a book with highlights from others, ZenOS's

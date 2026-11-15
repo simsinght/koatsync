@@ -131,14 +131,13 @@ end
 
 -- Loading and placing ---------------------------------------------------------
 
---- Refreshes from the network in `secs` (only for a linked book with Wi-Fi already on).
+--- Refreshes from the network in `secs` (only for a linked book with Wi-Fi already connected; never prompts).
 function OthersReader:scheduleRefresh(secs, interactive)
     if self.refresh_task then UIManager:unschedule(self.refresh_task) end
     self.refresh_task = function()
         self.refresh_task = nil
         if not self.ui.document then return end
-        local NetworkMgr = require("ui/network/manager")
-        if not (self.plugin:isLinkedBook() and self.plugin:isSignedIn() and NetworkMgr:isWifiOn()) then return end
+        if not (self.plugin:isLinkedBook() and self.plugin:isSignedIn() and self.plugin:connected()) then return end
         self:startFetch(interactive)
     end
     UIManager:scheduleIn(secs or 0, self.refresh_task)
@@ -318,7 +317,9 @@ function OthersReader:workDone()
     self:closeProgress()
     if (long or interactive) and self.others then
         local n = #self.others.placed
-        if self.fetch_error and interactive then return end
+        -- A failed fetch: the reader who asked has had the alert (fetchDone); a
+        -- background one (often just offline) says nothing rather than "ready".
+        if self.fetch_error then return end
         self.plugin:notify(n > 0 and T(_("koatsync: highlights from others ready (%1)"), n)
             or _("koatsync: no highlights from others yet"))
     end

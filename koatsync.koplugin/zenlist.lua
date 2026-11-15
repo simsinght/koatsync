@@ -3,8 +3,9 @@ Everyone's highlights in ZenOS's highlight list (its annotation viewer:
 `modules/reader/annotation_viewer.lua`, opened from the reader controls, the
 dispatcher, or as the Highlights / Annotations tabs of the page browser).
 
-In a book with others' highlights, the list's title bar gets a two-state
-control, "Mine only" | "Everyone's" (remembered per device, setting
+In a book with others' highlights, or one that reads along with a club book
+(even before anyone else has highlighted), the list's title bar gets a two-state
+control, "Mine" | "Everyone's" (remembered per device, setting
 `list_everyone`). With "Everyone's":
 
 * others' passages are rows in reading order between the reader's own, one
@@ -15,6 +16,8 @@ control, "Mine only" | "Everyone's" (remembered per device, setting
 * passages beyond the reader's furthest position (othersreader.lua) are one
   quiet row, "12 more from others further on", revealed for this list after a
   confirm; passages not found in this edition are one count-only row;
+* in a read-along book where nobody else has highlighted yet, one quiet line
+  at the top says so;
 * search matches others' passages, names and notes; type, colour and style
   filters apply as they would to any highlight (others' highlights have no
   colour or style, so those filters leave them out); "People" in the filter
@@ -52,7 +55,7 @@ ZenList.KINDS = { annotations = true, highlights = true } -- tabs that list high
 ZenList.PEOPLE_FACET = "koatsync_people"
 
 ZenList.TEXT = {
-    mine = _("Mine only"),
+    mine = _("Mine"),
     everyone = _("Everyone's"),
     you = _("you"),
     people = _("People"),
@@ -89,6 +92,8 @@ function ZenList.beyondText(n, matches)
     return n == 1 and _("1 more from others further on · tap to show")
         or T(_("%1 more from others further on · tap to show"), n)
 end
+
+ZenList.NONE_TEXT = _("No one else has highlighted in this book yet")
 
 function ZenList.unplacedText(n)
     return T(_("%1 from others not in this edition"), n)
@@ -196,6 +201,16 @@ function ZenList.collect(ctx)
             koatsync = { kind = "unplaced", count = unplaced },
         }
     end
+    if #(reader.others.placed or {}) + unplaced == 0 then
+        -- a read-along book nobody else has highlighted in yet (ZenList.context)
+        out.none_record = {
+            file = base.file, title = base.title, author = base.author,
+            kind = "highlight", order = -1, text = "", note = ZenList.NONE_TEXT,
+            datetime = "", chapter = "", page_label = "", color = "", style = "", tags = {},
+            id = "koatsync:none",
+            koatsync = { kind = "none" },
+        }
+    end
     return out
 end
 
@@ -236,6 +251,7 @@ function ZenList.inject(ctx, session)
     end
     if data.beyond_record then records[#records + 1] = data.beyond_record end
     if data.unplaced_record then records[#records + 1] = data.unplaced_record end
+    if data.none_record then records[#records + 1] = data.none_record end
 end
 
 -- Search and filters -----------------------------------------------------------------
@@ -269,7 +285,7 @@ function ZenList.matches(orig, record, state, kind)
         record.note = ZenList.beyondText(n, true)
         return n > 0
     end
-    if ks.kind == "unplaced" then return not ZenList.filtering(state) end
+    if ks.kind == "unplaced" or ks.kind == "none" then return not ZenList.filtering(state) end
     return false
 end
 
@@ -408,7 +424,7 @@ changed for that one call only, and left alone if it does not look as expected.
 function ZenList.showFilters(orig_fn, pbw, ...)
     local ctx = pbw._koatsync_ctx
     local okm, Menu = pcall(require, "common/ui/zen_anchored_menu")
-    if not (ctx and ctx.data and okm and type(Menu) == "table" and type(Menu.new) == "function") then
+    if not (ctx and ctx.data and not ctx.data.none_record and okm and type(Menu) == "table" and type(Menu.new) == "function") then
         return orig_fn(pbw, ...)
     end
     local saved, current, used = rawget(Menu, "new"), Menu.new, false
@@ -438,7 +454,9 @@ end
 
 --[[--
 Whether the list being built gets the control: a highlight tab of the open
-book, which has others' highlights. Returns the build context, or nil.
+book, which has others' highlights or reads along with a club book (the
+plugin's `isLinkedBook`: the book is linked to a club book space). Returns the
+build context, or nil.
 ]]
 function ZenList.context(pbw, kind, store_of)
     if not ZenList.KINDS[kind] then return nil end
@@ -447,7 +465,12 @@ function ZenList.context(pbw, kind, store_of)
     local reader = ui.koatsync_others
     local others = type(reader) == "table" and reader.others
     if type(others) ~= "table" then return nil end
-    if #(others.placed or {}) + #(others.unplaced or {}) == 0 then return nil end
+    if #(others.placed or {}) + #(others.unplaced or {}) == 0 then
+        local plugin = reader.plugin
+        if not (type(plugin) == "table" and type(plugin.isLinkedBook) == "function" and plugin:isLinkedBook()) then
+            return nil
+        end
+    end
     local store = store_of and store_of(reader) or (reader.plugin and reader.plugin.store)
     if not store then return nil end
     return { pbw = pbw, ui = ui, reader = reader, store = store, kind = kind,
@@ -653,9 +676,16 @@ end
 -- The control ---------------------------------------------------------------------------
 
 --[[--
-"Mine only" | "Everyone's": two cells in one thin frame, the chosen one
-inverted (black, white text), which reads at a glance on e-ink. Tapping a
-cell chooses it.
+"Mine" | "Everyone's" as two words with no frame around them: the chosen one
+is a small black pill (bold white text), the other plain black text, which
+reads at a glance on e-ink and in night mode (inverted, the pill turns white).
+Tapping a word chooses it.
+
+Options: `everyone`, `face`, `callback(on)`, `variant` ("full"; "compact",
+tighter padding; "single", only the current choice, and a tap switches),
+`max_h` (the drawn control is never taller than this: the height of the line
+it sits on), `tap_range` (optional function returning a Geom: a larger
+invisible tap zone around the drawn control).
 ]]
 function ZenList.newToggle(o)
     local Blitbuffer = require("ffi/blitbuffer")
@@ -663,39 +693,100 @@ function ZenList.newToggle(o)
     local Geom = require("ui/geometry")
     local GestureRange = require("ui/gesturerange")
     local HorizontalGroup = require("ui/widget/horizontalgroup")
+    local HorizontalSpan = require("ui/widget/horizontalspan")
     local InputContainer = require("ui/widget/container/inputcontainer")
     local Size = require("ui/size")
     local TextWidget = require("ui/widget/textwidget")
     local Toggle = InputContainer:extend{}
     function Toggle:init()
-        local pad_h, pad_v = Size.padding.large, Size.padding.small
+        local compact = self.variant ~= "full"
+        local pad_h = compact and Size.padding.default or Size.padding.large
+        local gap = compact and Size.padding.small or Size.padding.default
+        local labels = { ZenList.TEXT.mine, ZenList.TEXT.everyone }
+        local first = 1
+        if self.variant == "single" then
+            first = self.everyone and 2 or 1
+            labels = { labels[first] }
+        end
+        local texts = {}
+        local text_h = 0
+        for i, label in ipairs(labels) do
+            local on = (i + first - 1 == 2) == (self.everyone and true or false)
+            texts[i] = TextWidget:new{ text = label, face = self.face, bold = on,
+                fgcolor = on and Blitbuffer.COLOR_WHITE or Blitbuffer.COLOR_BLACK }
+            text_h = math.max(text_h, texts[i]:getSize().h)
+        end
+        local pad_v = Size.padding.small
+        if self.max_h then pad_v = math.max(0, math.min(pad_v, math.floor((self.max_h - text_h) / 2))) end
         self.cells = {}
         local group = HorizontalGroup:new{ align = "center" }
-        for i, label in ipairs({ ZenList.TEXT.mine, ZenList.TEXT.everyone }) do
-            local on = (i == 2) == self.everyone
+        for i, text in ipairs(texts) do
+            local on = (i + first - 1 == 2) == (self.everyone and true or false)
+            if i > 1 then group[#group + 1] = HorizontalSpan:new{ width = gap } end
             local cell = FrameContainer:new{
-                bordersize = 0, radius = 0, margin = 0,
+                bordersize = 0, margin = 0, radius = on and math.floor((text_h + 2 * pad_v) / 2) or 0,
                 padding = 0, padding_left = pad_h, padding_right = pad_h, padding_top = pad_v, padding_bottom = pad_v,
-                background = on and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_WHITE,
-                TextWidget:new{ text = label, face = self.face, bold = on,
-                    fgcolor = on and Blitbuffer.COLOR_WHITE or Blitbuffer.COLOR_BLACK },
+                background = on and Blitbuffer.COLOR_BLACK or nil,
+                text,
             }
             self.cells[i] = cell
             group[#group + 1] = cell
         end
-        self[1] = FrameContainer:new{ bordersize = Size.border.button, radius = 0, padding = 0, margin = 0,
-            background = Blitbuffer.COLOR_WHITE, group }
-        local size = self[1]:getSize()
+        self.gap = #texts > 1 and gap or 0
+        -- How far the outer words' text sits inside the control (their padding):
+        -- the text lines up with the list's edge, and the pill, when an outer
+        -- word is chosen, reaches into the margin. The words never move.
+        self.inset_left, self.inset_right = pad_h, pad_h
+        self[1] = group
+        local size = group:getSize()
         self.dimen = Geom:new{ x = 0, y = 0, w = size.w, h = size.h }
-        self.ges_events = { TapToggle = { GestureRange:new{ ges = "tap", range = self.dimen } } }
+        local range = self.tap_range or function() return self.dimen end
+        self.ges_events = { TapToggle = { GestureRange:new{ ges = "tap", range = range } } }
     end
     function Toggle:onTapToggle(_, ges)
-        local x = ges and ges.pos and ges.pos.x or 0
-        local everyone = x - self.dimen.x >= self.cells[1]:getSize().w
-        if everyone ~= self.everyone and self.callback then self.callback(everyone) end
+        local everyone
+        if #self.cells == 1 then
+            everyone = not self.everyone
+        else
+            local x = ges and ges.pos and ges.pos.x or 0
+            everyone = x - self.dimen.x >= self.cells[1]:getSize().w + math.floor(self.gap / 2)
+        end
+        if everyone ~= (self.everyone and true or false) and self.callback then self.callback(everyone) end
         return true
     end
     return Toggle:new(o)
+end
+
+--[[--
+Where the control goes, as plain numbers (all relative to the title bar).
+
+`spot.line_y`, `spot.line_h`: the line it is centred on (the title's text, or
+the book line under it); `spot.align`: "left" (next to the centred title, which
+must stay clear: `spot.title_w`) or "right" (end of the book line);
+`spot.room`: for "right", the most width it may take. `build(variant)` makes a
+control and returns it; the first variant that fits wins ("full", "compact",
+then "single"). Returns the control and its `{ x, y }` offset. The title bar's
+own height is never part of this: the control fits inside the line.
+]]
+function ZenList.placeToggle(spot, build)
+    local room
+    if spot.align == "left" then
+        room = math.floor((spot.width - spot.title_w) / 2) - spot.side - spot.gap
+    else
+        room = spot.room
+    end
+    local toggle
+    for _i, variant in ipairs({ "full", "compact", "single" }) do
+        if toggle and toggle.free then toggle:free() end
+        toggle = build(variant)
+        local inset = spot.align == "left" and toggle.inset_left or toggle.inset_right
+        if toggle:getSize().w - (inset or 0) <= room then break end
+    end
+    local size = toggle:getSize()
+    local x = spot.align == "left" and spot.side - (toggle.inset_left or 0)
+        or spot.width - spot.side - size.w + (toggle.inset_right or 0)
+    local y = spot.line_y + math.floor((spot.line_h - size.h) / 2)
+    return toggle, { x, y }
 end
 
 function ZenList.setEveryone(ctx, on)
@@ -710,30 +801,65 @@ end
 Puts the control into ZenOS's title bar: at the right end of the line under
 the title (the book's title, shortened to make room), right below the search,
 menu and close icons. Without that line (ZenOS set to hide the book), it goes
-to the left end of the title's own line.
+to the left end of the title's own line, centred on the title's text and kept
+clear of it. Either way it is no taller than the line it sits on, so the title
+bar keeps ZenOS's height; its tap zone is that whole line around it.
 ]]
 function ZenList.addToggle(ctx, menu)
     local tb = menu.title_bar
     local search = type(tb) == "table" and tb._zen_search
-    if not (search and type(search.overlap_offset) == "table" and type(search.getSize) == "function") then return end
+    if not (search and type(search.overlap_offset) == "table" and type(search.getSize) == "function"
+            and type(tb.width) == "number") then return end
     local Font = require("ui/font")
-    local toggle = ZenList.newToggle{
-        everyone = ctx.everyone,
-        face = Font:getFace("cfont", 15),
-        show_parent = ctx.pbw,
-        callback = function(on) ZenList.setEveryone(ctx, on) end,
-    }
-    local size, bh = toggle:getSize(), search:getSize().h
-    local side = ctx.metrics and ctx.metrics.side or 0
+    local Geom = require("ui/geometry")
+    local Size = require("ui/size")
+    local side = ctx.metrics and ctx.metrics.side or Size.padding.large
     local sub = tb._zen_subtitle
-    if type(sub) == "table" and type(sub.overlap_offset) == "table" and type(sub.setMaxWidth) == "function" then
-        local sub_h = sub:getSize().h
-        toggle.overlap_offset = { tb.width - side - size.w, sub.overlap_offset[2] + math.floor((sub_h - size.h) / 2) }
-        sub:setMaxWidth(math.max(1, tb.width - 3 * side - size.w))
+    local on_sub = type(sub) == "table" and type(sub.overlap_offset) == "table" and type(sub.setMaxWidth) == "function"
+    local spot = { width = tb.width, side = side, gap = Size.padding.large * 2 }
+    if on_sub then
+        spot.align, spot.line_y, spot.line_h = "right", sub.overlap_offset[2], sub:getSize().h
+        spot.room = math.floor(tb.width / 2) - side
     else
-        toggle.overlap_offset = { side, (search.overlap_offset[2] or 0) + math.floor((bh - size.h) / 2) }
+        local title = tb.title_widget
+        local tg = tb.title_group
+        local top = type(tg) == "table" and type(tg[1]) == "table" and tg[1].getSize and tg[1]:getSize().h
+        if not (type(title) == "table" and title.getSize and top) then return end
+        spot.align, spot.title_w = "left", title:getSize().w
+        spot.line_y, spot.line_h = top, title:getSize().h
     end
-    table.insert(tb, toggle)
+    -- Tap zone: the line, from the drawn control out to half the gap on each side.
+    local tap_top, tap_h
+    if on_sub then
+        tap_top, tap_h = spot.line_y, spot.line_h
+    else
+        local below = type(tb._zen_author) == "table" and type(tb._zen_author.overlap_offset) == "table"
+            and tb._zen_author.overlap_offset[2]
+        tap_top, tap_h = 0, below or tb.titlebar_height or spot.line_y + spot.line_h
+    end
+    local toggle, offset = ZenList.placeToggle(spot, function(variant)
+        local t
+        t = ZenList.newToggle{
+            everyone = ctx.everyone,
+            variant = variant,
+            face = Font:getFace("cfont", 16),
+            max_h = spot.line_h,
+            show_parent = ctx.pbw,
+            callback = function(on) ZenList.setEveryone(ctx, on) end,
+            tap_range = function()
+                local d, tbd = t.dimen, tb.dimen
+                local pad = math.floor(spot.gap / 2)
+                return Geom:new{ x = d.x - pad, y = (tbd and tbd.y or 0) + tap_top, w = d.w + 2 * pad, h = tap_h }
+            end,
+        }
+        return t
+    end)
+    toggle.overlap_offset = offset
+    if on_sub then sub:setMaxWidth(math.max(1, tb.width - 3 * side - toggle:getSize().w)) end
+    -- First child: ZenOS's icon buttons are taller than the title's line and
+    -- their tap zones reach down into the book line, where the control's would
+    -- otherwise lose to them (the title bar asks its children in order).
+    table.insert(tb, 1, toggle)
     tb._koatsync_toggle = toggle
     -- Hardware keys: the control joins the title bar's focus row.
     local gen = tb.generateHorizontalLayout
@@ -747,12 +873,12 @@ function ZenList.addToggle(ctx, menu)
     return toggle
 end
 
---- The title's count ("Annotations (12)") without the spoiler and not-in-this-edition rows.
+--- The title's count ("Annotations (12)") without the spoiler, not-in-this-edition and nobody-yet rows.
 local function fixCount(menu)
     local n = 0
     for _i, item in ipairs(menu.item_table or {}) do
         local ks = type(item.record) == "table" and rawget(item.record, "koatsync")
-        if type(ks) == "table" and (ks.kind == "beyond" or ks.kind == "unplaced") then n = n + 1 end
+        if type(ks) == "table" and (ks.kind == "beyond" or ks.kind == "unplaced" or ks.kind == "none") then n = n + 1 end
     end
     local tb = menu.title_bar
     if n == 0 or not (type(tb) == "table" and type(tb.title) == "string" and type(tb.setTitle) == "function") then return end
@@ -811,7 +937,7 @@ function ZenList.buildActive(orig, ctx, pbw, kind, width, height)
     local t3 = clock()
     ctx.timing = { collect = t1 - t0, build = t2 - t1, decorate = t3 - t2, total = t3 - t0 }
     logger.info(string.format("koatsync: highlight list: %s, %d rows from others (%d on own rows), collect %.3fs, ZenOS build %.3fs, decorate %.3fs",
-        ctx.everyone and "everyone's" or "mine only", ctx.data and #ctx.data.records or 0,
+        ctx.everyone and "everyone's" or "mine", ctx.data and #ctx.data.records or 0,
         ctx.data and ctx.data.stats.attached or 0, t1 - t0, t2 - t1, t3 - t2))
     return menu
 end

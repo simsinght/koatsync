@@ -134,16 +134,112 @@ do
     S.offline = true
     p:onAnnotationsModified(); S.runTasks()
     check("network error: still dirty", #p.store:dirtyFiles() == 1)
-    check("network error: told once", #S.notifications == 1 and S.notifications[1]:find("can't reach", 1, true),
+    check("network error: not a word, even the first time", #S.notifications == 0 and #S.shown == 0,
         table.concat(S.notifications, " / "))
     p:onAnnotationsModified(); S.runTasks()
-    check("network error again: no notification spam", #S.notifications == 1, table.concat(S.notifications, " / "))
+    check("network error again: still quiet", #S.notifications == 0, table.concat(S.notifications, " / "))
     check("network error again: still dirty", #p.store:dirtyFiles() == 1)
+    check("network error: no notice state stored", p.store:get("auto_sync_notice") == nil)
     S.offline = false
     p:onNetworkConnected()
     check("connect grace scheduled", #S.tasks == 1 and S.tasks[1].at == 8)
     S.runTasks()
     check("flushed after connect", S.countRepo("at.stim.reading.highlight") == 1 and #p.store:dirtyFiles() == 0)
+end
+
+-- 3a. offline is not an error: automatic work never shows a network failure,
+-- never tries without a connection, never asks to turn Wi-Fi on; manual work still answers
+S.reset()
+do
+    local ann = { hl("x", "2026-01-01 10:00:00") }
+    local ui = S.newReaderUI("/b/a.epub", ann)
+    local p = signedInPlugin(ui)
+    local t = 3000000
+    p.now = function() return t end
+    local function settle() p:onAnnotationsModified(); S.runTasks() end
+    local function quiet() return #S.notifications == 0 and #S.shown == 0 and S.wifi_prompts == 0 end
+    -- Wi-Fi radio on, no network to join (a train): no attempt at all
+    S.connected = false
+    local before = #S.calls
+    settle()
+    check("on but not connected: settle makes no request", #S.calls == before, #S.calls - before)
+    check("on but not connected: quiet, no Wi-Fi prompt", quiet(), table.concat(S.notifications, " / "))
+    check("on but not connected: still dirty", #p.store:dirtyFiles() == 1)
+    ann[1].note = "on the train"
+    p:onAnnotationsModified(); p:onCloseDocument()
+    check("on but not connected: close makes no request, says nothing", #S.calls == before and quiet())
+    p:onNetworkConnected(); S.runTasks()
+    check("on but not connected: connect flush makes no request", #S.calls == before and quiet())
+    p:offerReadAlong()
+    check("on but not connected: no club check, no banner", #S.calls == before and quiet())
+    -- the other's refresh doesn't start either
+    local OthersReader = require("othersreader")
+    local started = false
+    local reader = setmetatable({ plugin = p, ui = ui, store = p.store }, { __index = OthersReader })
+    reader.startFetch = function() started = true end
+    p.isLinkedBook = function() return true end
+    reader:scheduleRefresh(0); S.runTasks()
+    check("on but not connected: others' refresh not started", not started)
+    S.connected = true
+    reader:scheduleRefresh(0); S.runTasks()
+    check("connected: others' refresh starts", started)
+    p.isLinkedBook = nil
+    -- Wi-Fi off entirely: same
+    S.wifi_on = false
+    settle()
+    check("Wi-Fi off: no request, quiet", #S.calls == before and quiet())
+    S.wifi_on = true
+    -- connected, but the network fails (no uplink, DNS, captive portal): attempted, never shown
+    local offline_errors = {
+        { message = "host or service not provided, or not known" }, { message = "timeout" },
+        { message = "Network is unreachable" }, { message = "closed" }, { message = "wantread" },
+        { message = "Connection reset by peer" }, { message = "certificate verify failed" },
+        { status = 302, message = "HTTP 302" }, { status = 511, message = "Network Authentication Required" },
+    }
+    for i, e in ipairs(offline_errors) do
+        S.offline = e
+        ann[1].note = "try " .. i
+        t = t + (i % 2 == 0 and 2 * 86400 or 60) -- some more than a day apart
+        settle()
+        p:onAnnotationsModified(); p:onCloseDocument()
+        p:onNetworkConnected(); S.runTasks()
+    end
+    check("network failures: all attempted", #S.calls > before)
+    check("network failures, first time and days later: never shown", quiet(), table.concat(S.notifications, " / "))
+    check("network failures: still dirty", #p.store:dirtyFiles() == 1)
+    -- right after a success
+    S.offline = false
+    settle()
+    check("recovered: synced quietly", #p.store:dirtyFiles() == 0 and quiet())
+    S.offline = { message = "timeout" }
+    ann[1].note = "after success"
+    t = t + 60; settle()
+    check("network failure right after a success: quiet", quiet(), table.concat(S.notifications, " / "))
+    -- network failures don't hide or reset an auth failure
+    S.offline = { status = 401, error = "AuthenticationRequired", message = "x" }
+    t = t + 60; settle()
+    check("auth failure after network ones: shown", #S.notifications == 1 and S.notifications[1]:find("sign in again", 1, true))
+    S.offline = { message = "timeout" }
+    t = t + 60; settle()
+    check("network after auth: quiet, auth state kept", #S.notifications == 1 and p.store:get("auto_sync_notice").kind == "auth")
+    S.offline = { status = 401, error = "AuthenticationRequired", message = "x" }
+    t = t + 60; settle()
+    check("auth again within the day: still quiet", #S.notifications == 1)
+    -- the reader asks: a network failure gets a plain answer
+    S.offline = { message = "Network is unreachable" }
+    local shown = #S.shown
+    p:onKoatsyncSyncBook()
+    local last = S.shown[#S.shown]
+    check("manual sync, network failure: alerted", #S.shown > shown and last.kind == "info" and last.text
+        and last.text:find("Network is unreachable", 1, true), last and last.text)
+    shown = #S.shown
+    p:onKoatsyncSyncAll()
+    last = S.shown[#S.shown]
+    check("manual sync all, network failure: alerted", #S.shown > shown and last.text and last.text:find("could not be synced", 1, true),
+        last and last.text)
+    -- the owner's own highlights are untouched by all of this
+    check("own highlights untouched", #ann == 1 and ann[1].text == "x" and ann[1].note == "after success")
+    S.offline = false
 end
 
 -- 3b. automatic sync failures: new kind shown, same kind once a day, reset by a success

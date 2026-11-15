@@ -50,9 +50,27 @@ preload("ffi/util", { template = function(s, ...)
     return (s:gsub("%%(%d)", function(n) return tostring(args[tonumber(n)]) end))
 end })
 preload("util", { trim = function(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end, makePath = function() return true end })
+-- S.wifi_on: the radio; S.connected: an address on it (on a train: on, not connected).
+-- Anything that would ask to turn Wi-Fi on, or wait for it, counts in S.wifi_prompts.
+S.connected = true
+S.wifi_prompts = 0
+local function prompt() S.wifi_prompts = S.wifi_prompts + 1 end
 preload("ui/network/manager", {
     isWifiOn = function() return S.wifi_on end,
-    runWhenOnline = function(_, fn) fn() end,
+    isConnected = function() return S.wifi_on and S.connected end,
+    isOnline = function() return S.wifi_on and S.connected end,
+    runWhenOnline = function(_, fn)
+        if not (S.wifi_on and S.connected) then prompt() end
+        fn()
+    end,
+    runWhenConnected = function(_, fn)
+        if not (S.wifi_on and S.connected) then prompt() end
+        fn()
+    end,
+    beforeWifiAction = function(_, fn) prompt(); if fn then fn() end end,
+    promptWifiOn = function() prompt() end,
+    turnOnWifi = function() prompt() end,
+    turnOnWifiAndWaitForConnection = function(_, fn) prompt(); if fn then fn() end end,
 })
 
 local function settingsObject(data)
@@ -160,6 +178,7 @@ end
 function S.reset()
     S.shown, S.notifications, S.tasks, S.sidecars, S.settings_data = {}, {}, {}, {}, {}
     S.repo, S.next_rkey, S.offline, S.calls, S.wifi_on = {}, 0, false, {}, true
+    S.connected, S.wifi_prompts = true, 0
 end
 
 return S
